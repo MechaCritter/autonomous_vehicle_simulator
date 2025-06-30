@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package datastream;
+
+service DataStreamer {
+  rpc StreamData(Empty) returns (stream DataPoint);
+}
+
+message Empty {}
+
+message DataPoint {
+  double value = 1;
+  int64 timestamp = 2;
+}

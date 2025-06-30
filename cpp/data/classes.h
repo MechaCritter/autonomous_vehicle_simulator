@@ -2,13 +2,14 @@
 #define CLASSES_H
 #include <variant>
 #include <cstdint>
+#include <unordered_map>
 
 
 /**
  * @brief Represents a 2D pose with position and orientation
  * @details This structure defines a pose in 2D space consisting of:
  *          - x: position along x-axis in meters
- *          - y: position along y-axis in meters  
+ *          - y: position along y-axis in meters
  *          - theta: orientation angle in radians
  */
 struct Pose2D {

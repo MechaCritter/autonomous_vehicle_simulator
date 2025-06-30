@@ -7,11 +7,12 @@
 #include <vector>
 
 int main() {
-    Lidar2D lidar("Lidar1", "front");
+    Map2D map = globalMap();
+    Lidar2D lidar("Lidar1", "front", &map, 10, Pose2D{10,10,0});
     std::cout << "Sensor name: " << lidar.name() << std::endl;
 
     std::vector input = {1, 2, 3, 4, 5};
-    std::unique_ptr<sensor_data::SensorData> data = lidar.generateData(input);
+    std::unique_ptr<sensor_data::SensorData> data = lidar.generateData();
 
     if (data->has_lidar_scan_2d()) {
         float angleMin = data->lidar_scan_2d().angle_min();
@@ -20,11 +21,10 @@ int main() {
         std::cout << "No LidarScan2D data available." << std::endl;
     }
 
-    const Map2D map = globalMap();
     std::cout << "Map width: " << map.width() << std::endl;
     std::cout << "Map height: " << map.height() << std::endl;
     std::cout << "Map resolution: " << map.resolution() << std::endl;
     std::cout << "Map cell at (0, 0): " << static_cast<int>(map.atPx(0, 0)) << std::endl;
-    std::cout << "Map cell class at (0, 0): " << map.atPx(0, 0) << std::endl;
+    //std::cout << "Map cell class at (0, 0): " << map.atPx(0, 0) << std::endl;
 }
 

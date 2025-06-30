@@ -8,13 +8,13 @@
 #ifndef SENSOR_H
 #define SENSOR_H
 
-#include <vector>
 #include <string>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
 #include "proto/generated/sensor_data.pb.h"
 #include "../data/classes.h"
+#include "../map/Map2D.h"
 
 class Sensor {
 public:
@@ -23,10 +23,13 @@ public:
      *
      * @param name      Human‑readable identifier
      * @param position  Mounting position (front/back/left/right/…)
+     * @param map    Pointer to the map object
      * @param sample_rate_hz Sensor sample rate in Hz
+     * @param pose   Pose of the sensor in the map
      */
     Sensor(std::string  name,
         std::string   position,
+        Map2D* map = nullptr,
         uint16_t     sample_rate_hz = 10,
         Pose2D pose = {0, 0, 0});
 
@@ -46,10 +49,9 @@ public:
      * Sums the input values. Meant as a placeholder for
      * real sensor processing.
      *
-     * @param input A vector of sample integers
      * @return int  Sum of all samples (32‑bit; promoted internally)
      */
-    [[nodiscard]] virtual std::unique_ptr<sensor_data::SensorData> generateData(const std::vector<int>& input) = 0;
+    [[nodiscard]] virtual std::unique_ptr<sensor_data::SensorData> generateData() = 0;
 
     [[nodiscard]] const std::string& name()     const noexcept { return name_; }
     [[nodiscard]] const std::string& position() const noexcept { return position_; }
@@ -61,7 +63,12 @@ public:
      * @brief Links the sensor to a sensor type
      *
      */
-    [[nodiscard]] virtual sensor_data::SensorType protoType() const = 0;
+    [[nodiscard]] virtual sensor_data::SensorType sensorType() const = 0;
+
+protected:
+    [[nodiscard]] const Pose2D& pose() const noexcept { return pose_; }
+    [[nodiscard]] uint8_t       id()   const noexcept { return id_;  }
+    Map2D* map_ = nullptr;
 
 private:
     /// **Every derived class overrides this and returns its own logger.**

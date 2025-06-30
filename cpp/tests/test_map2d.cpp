@@ -15,5 +15,5 @@ TEST(Map2D, Window) {
     Map2D w = g.window(5,5,3);
     EXPECT_EQ(w.width(), 6);
     EXPECT_EQ(w.height(),6);
-    EXPECT_EQ(w.atPx(0,0), Cell::Obstacle);
+    EXPECT_EQ(w.atPx(3,3), Cell::Obstacle); // the central cell of the window should be the obstacle
 }
