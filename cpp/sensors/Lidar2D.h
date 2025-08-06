@@ -7,10 +7,10 @@
 #include <opencv2/opencv.hpp>
 #include "Sensor.h"
 #include "../map/Map2D.h"
+#include "../utils/logging.h"
 
 
-
-class Lidar2D : public Sensor
+class Lidar2D final : public Sensor
 {
 public:
     using Sensor::Sensor;   // inherit the ctor(s)
@@ -40,23 +40,26 @@ public:
     [[nodiscard]] double maxRange() const noexcept { return max_range_; }
     [[nodiscard]] double angleMin() const noexcept { return angle_min_; }
     [[nodiscard]] double angleIncrement() const noexcept { return angle_increment_; }
+    [[nodiscard]] Cell cellType() const noexcept override { return Cell::Lidar; }
 
+    /*
+     * @brief Update the position of the lidar for the current time step.
+     */
+    void update() override;
+protected:
+    /// Override: returns the *type‑local* logger
+    [[nodiscard]] spdlog::logger& logger() const override
+    {
+        // name the logger after the class once – spdlog returns the same ptr next time
+        static std::shared_ptr<spdlog::logger> logger_ = utils::getLogger("lidar");
+        return *logger_;
+    }
 private:
     int n_beams_ = 360; // number of beams
     double fov_ = 5 * M_PI / 6; // field of view in radians
     double max_range_ = 10.0; // maximum range in meters
     double angle_min_ = -fov_ / 2.0; // minimum angle in radians
     double angle_increment_ = fov_ / (n_beams_ - 1);
-
-protected:
-    /// Override: returns the *type‑local* logger
-    [[nodiscard]] spdlog::logger& logger() const override
-    {
-        // name the logger after the class once – spdlog returns the same ptr next time
-        static std::shared_ptr<spdlog::logger> logger_ =
-            spdlog::stdout_color_mt("lidar");
-        return *logger_;
-    }
 };
 
 

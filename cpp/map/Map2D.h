@@ -5,9 +5,12 @@
 #include <opencv2/opencv.hpp>
 #include <string>
 #include <filesystem>
-#include <spdlog/spdlog.h>
+#include <unordered_map>
 
 #include "../data/classes.h"
+#include "../utils/utils.h"
+#include "../utils/logging.h"
+#include "../base/MapObject.h"
 
 constexpr int MAX_MAP_WIDTH = 1000;
 constexpr int MAX_MAP_HEIGHT = 1000;
@@ -15,19 +18,44 @@ constexpr double DEFAULT_MAP_RESOLUTION = 0.1; // meters/pixel
 // const std::string DEFAULT_MAP_FILE = "../../res/maps/default_map.bmp"; // TODO: find a way to make relative path to work again
 const std::string DEFAULT_MAP_FILE = "/home/critter/workspace/autonomous_vehicle_simulator/res/maps/default_map.bmp";
 
+class Vehicle; // forward declaration, otherwise circular dependency with Vehicle.h
+
 class Map2D {
 public:
     /**
      * @brief Construct a new Map2D object. This object holds a pixmap where each
      * pixel represents a cell in the map. Each cell represents a class.
      *
+     * @param width Width of the map in pixels
+     * @param height Height of the map in pixels
+     * @param res_m Resolution of the map in meters per pixel
+     */
+    Map2D(
+    int width,
+    int height,
+    double res_m
+    );
+    /**
+     * @brief Construct a new Map2D object. This object holds a pixmap where each
+     * pixel represents a cell in the map. Each cell represents a class.
+     *
+     * @param width Width of the map in pixels
+     * @param height Height of the map in pixels
+     * @param res_m Resolution of the map in meters per pixel
+     * @param default_value The default cell value to fill the entire map with.
      */
     Map2D(
         int width,
         int height,
         double res_m,
-        Cell default_value = Cell::Unknown
+        Cell default_value
         );
+    Map2D(const Map2D&) = delete;          // still non-copyable
+    Map2D& operator=(const Map2D&) = delete;
+
+    Map2D(Map2D&&) noexcept = default;     // now movable
+    Map2D& operator=(Map2D&&) noexcept = default;
+
     /**
      * @brief Destructor.
      */
@@ -72,6 +100,12 @@ public:
     [[nodiscard]] double resolution() const noexcept {return resolution_;}
     [[nodiscard]] static const std::unordered_map<Cell, std::array<std::uint8_t, 3>>& cell_colors() noexcept
                         {return cell_colors_;}
+    [[nodiscard]] const std::vector<MapObject*>& objects() const noexcept { return objects_; }
+    [[nodiscard]] int maxFrameStored() const noexcept { return max_frames_stored_; }
+    [[nodiscard]] bool simulationActive() const noexcept { return simulation_active_; }
+    /** Return a raw pointer to the cell at (x,y).  *No bounds check*. */
+    Cell* cellPtr(int x, int y) { return &map_data_[idx(x,y)]; }
+
     // Cells utilities
     /**
      * @brief Converts a BGR color array to a corresponding Cell type
@@ -140,42 +174,60 @@ public:
      */
     void fillMapWith(Cell cell);
 
-private:
-    static spdlog::logger &logger(); // one logger obj shared across all Map2D instances
-    [[nodiscard]] int idx(int x, int y) const noexcept { return y * width_ + x; }
-    int width_ = MAX_MAP_WIDTH;
-    int height_ = MAX_MAP_HEIGHT;
-    double resolution_ = DEFAULT_MAP_RESOLUTION; // meters/pixel
-    int origin_x_ = 0; // origin x coordinate in pixels
-    int origin_y_ = 0; // origin y coordinate in pixels
-    std::vector<Cell> map_data_;
-    // A hash table that maps each cell type to its corresponding BGR color.
-    static std::unordered_map<Cell, std::array<std::uint8_t, 3>> cell_colors_;
+    /**
+     * @brief Registers the Object on this map
+     *
+     * @param object object to be registered
+     */
+    void addObject(MapObject& object);
 
-#ifdef WITH_OPENCV_DEBUG                               // ← add begin
-public:
-    /** Start buffering frames of the current map view         */
-    void startMotionCapture();
+    /**
+     * @brief Removes all the footprints of the objects on the map and
+     * restores the previous cell values.
+     */
+     void removeFootprints() const;
+
+    /** Start buffering frames of the current map view in a separate thread.
+     * When this method is called, it updates the motion of the objects on
+     * it until the *endSimulation()* method is called, or the max. frame count
+     * is reached.
+     */
+    void startSimulation();
+
+    /**
+     * @brief Starts the simulation for a specified duration in seconds.
+     * The simulation will run and update the map and objects for the given time,
+     * then automatically stop.
+     *
+     * @param seconds Duration to run the simulation, in seconds.
+     */
+    void startSimulationFor(unsigned int seconds);
 
     /** Add one frame (current map state) to the buffer         */
     void addMotionFrame();
 
-    /** Stop buffering frames of the current map view */
-    void endMotionCapture();
+    /** Terminates the simulation thread */
+    void endSimulation();
 
     /** Flush the buffer to an .mp4 file and reset the capture
      *
      * @param filename The name of the output video file
      * @param fps The frames per second of the output video
      */
-    void flushMotionCapture(const std::string& filename,
-                          double fps = 15.0);
+    void flushFrames(const std::string& filename);
+
+    /** Sets max. number of frames to store in the buffer.
+     * If the buffer is full, the oldest frames will be removed.
+     *
+     * @param max_frames The maximum number of frames to store in the buffer
+     */
+    void setMaxFramesStored(unsigned int max_frames) {max_frames_stored_ = max_frames;}
 
     /** Query helper                                            */
-    [[nodiscard]] bool isCapturing() const { return capture_active_; }
+    [[nodiscard]] bool isSimulating() const { return simulation_active_; }
 
     /** Return a BGR snapshot of the current grid (1 pixel per cell) */
-    cv::Mat renderToMat() const;
+    [[nodiscard]] cv::Mat renderToMat() const;
 
     /** Push a user-prepared frame into the buffer. Overloads the *addMotionFrame()* method to allow adding frames that are not
      * already rendered from the map data.
@@ -184,10 +236,49 @@ public:
      */
     void addMotionFrame(const cv::Mat& frame);
 
+    // /**
+    //  *
+    //  * @param Rasterise a world-frame rectangle (vehicle) into occupied cells.
+    //  *
+    //  * @param vehicle The vehicle to stamp on the map
+    //  */
+    // void stampVehicle(const Vehicle& vehicle);
+
+    /**
+     *
+     * @brief Returns the pixel coordinates based on the world coordinates.
+     * **NOTE**: world_x / resolution_ is the raw pixel coordinate. Casting to int will round it down.
+     * But, if the raw value goes into the next pixel (e.g. for resolution 0.2, and the pixel value is
+     * 38.9), it actually belongs to the next pixel (39). So we need to add the resolution to ensure
+     * that we round up correctly.
+     *
+     * @param world_x The x coordinate in world coordinates
+     * @param world_y The y coordinate in world coordinates
+     * @return std::pair<int, int> The pixel coordinates (x, y) in the map
+     */
+    [[nodiscard]] std::pair<int, int> worldToCell(float world_x, float world_y) const;
+
 private:
-    bool capture_active_{false};
+    [[nodiscard]] int idx(int x, int y) const noexcept { return y * width_ + x; }
+    int width_ = MAX_MAP_WIDTH;
+    int height_ = MAX_MAP_HEIGHT;
+    double resolution_ = DEFAULT_MAP_RESOLUTION; // meters/pixel
+    int origin_x_ = 0; // origin x coordinate in pixels
+    int origin_y_ = 0; // origin y coordinate in pixels
+    std::vector<Cell> map_data_;
+    std::vector<Cell> base_data_;        ///< immutable background (roads, obstacles …)
+    std::vector<MapObject*> objects_;    ///< dynamic objects attached to this map
+    // A hash table that maps each cell type to its corresponding BGR color.
+    static std::unordered_map<Cell, std::array<std::uint8_t, 3>> cell_colors_;
+
+    [[nodiscard]] static spdlog::logger& logger() {
+        static std::shared_ptr<spdlog::logger> logger_ = utils::getLogger("Map2D");
+        return *logger_;
+    }
+    std::thread simulation_thread_;
+    bool simulation_active_{false};
     std::vector<cv::Mat> capture_frames_;
-#endif
+    unsigned int max_frames_stored_{100000};
 };
 
 /**

@@ -7,6 +7,9 @@
 #include <fstream>
 #include <stdexcept>
 #include <filesystem>
+#include <cmath>
+#include "base/MapObject.h"
+#include "map/Map2D.h"
 
 // private methods used only in this file. NOTE: the color scheme is BGR
 namespace {
@@ -84,6 +87,71 @@ void utils::writeBmp(const std::string& path,
     }
 }
 
+bool utils::pointIsInRotatedRechtangle(int cell_x,
+                      int cell_y,
+                      double resolution,
+                      const MapObject& mao_object) {
+    /* --- convert the grid cell’s centre to world coordinates ---------------- */
+    const double px = (static_cast<double>(cell_x) + 0.5) * resolution;
+    const double py = (static_cast<double>(cell_y) + 0.5) * resolution;
+
+    /* --- translate into the vehicle’s body frame --------------------------- */
+    const double dx = px - mao_object.pose().x;
+    const double dy = py - mao_object.pose().y;
+
+    /* rotate by -theta */
+    const double c = std::cos(-mao_object.pose().theta);
+    const double s = std::sin(-mao_object.pose().theta);
+    const double bx =  c * dx - s * dy;   // longitudinal axis
+    const double by =  s * dx + c * dy;   // lateral axis
+
+    /* --- axis-aligned point-in-rectangle test ------------------------------ */
+    const double half_len = 0.5 * mao_object.length();
+    const double half_wid = 0.5 * mao_object.width();
+
+    return std::abs(bx) <= half_len + 1e-6 &&
+           std::abs(by) <= half_wid + 1e-6;
+}
+
+std::vector<Eigen::Vector2d>
+utils::transform(const std::vector<Eigen::Vector2d>& local_pts,
+          double                              angle_rad)
+{
+    // Eigen::Rotation2Dd is a thin wrapper around a 2×2 rotation matrix.
+    // Constructing it once avoids repeated std::cos / std::sin calls.
+    const Eigen::Rotation2Dd R(angle_rad);
+
+    std::vector<Eigen::Vector2d> world_pts;
+    world_pts.reserve(local_pts.size());
+
+    for (const auto& p_local : local_pts)
+    {
+        // Apply the rotation -- operator* does the matrix-vector multiply.
+        world_pts.emplace_back(R * p_local);
+    }
+    return world_pts;
+}
+
+std::vector<Eigen::Vector2d>
+utils::transform(const std::vector<Eigen::Vector2d>& local_pts,
+          const Pose2D& pose)
+{
+    Eigen::Rotation2Dd R(pose.theta);
+
+    std::vector<Eigen::Vector2d> world_pts;
+    world_pts.reserve(local_pts.size());
+
+    // Pre-compute the translation vector once to keep the loop lean.
+    const Eigen::Vector2d t{pose.x, pose.y};
+
+    for (const auto& p_local : local_pts)
+    {
+         //  R * p_local   → rotate into heading frame
+         //  + t           → slide into world frame
+        world_pts.emplace_back(R * p_local + t);
+    }
+    return world_pts;
+}
 
 
 

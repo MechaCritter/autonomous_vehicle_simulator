@@ -8,7 +8,10 @@
 #include <string>
 #include <array>
 #include <vector>
+#include <eigen3/Eigen/Dense>
 #include "../data/classes.h"
+
+class MapObject;
 
 namespace utils {
     /**
@@ -35,6 +38,43 @@ namespace utils {
                   int height,
                   const std::vector<std::array<uint8_t, 3> > &bgr,
                   bool topDown = false);
+
+    /**
+     * @brief Check if a grid-cell centre lies inside a rotated rectangle (vehicle).
+     *
+    - * @param cell_x, cell_y  Grid indices of the cell to test.
+    + * @param cell_x  Column index of the cell.
+    + * @param cell_y  Row index of the cell.
+     * @param resolution      Map resolution [m/px].
+     * @param vehicle         Target vehicle (pose, size).
+     * @return true if inside (edges inclusive).
+     */
+    bool pointIsInRotatedRechtangle(int cell_x,
+                          int cell_y,
+                          double resolution,
+                          const MapObject& vehicle);
+
+    /**
+     * @brief Rotate a set of 2-D points about the origin.
+     *
+     * @param[in] local_pts  Points expressed in the local/object frame.
+     * @param[in] angle_rad  Rotation angle in **radians** (CCW-positive).
+     * @return               Rotated points (same size/order as the input).
+     */
+    std::vector<Eigen::Vector2d>
+    transform(const std::vector<Eigen::Vector2d>& local_pts,
+              double angle_rad);
+
+    /**
+     * @brief Rotate a set of 2-D points and then translate them into world-frame.
+     *
+     * @param[in] local_pts  Points expressed in the vehicle/local frame.
+     * @param[in] pose       World-frame translation (x, y) and heading (θ).
+     * @return               Points in world coordinates.
+     */
+    std::vector<Eigen::Vector2d>
+    transform(const std::vector<Eigen::Vector2d>& local_pts,
+              const Pose2D&                       pose);
 }
 
 

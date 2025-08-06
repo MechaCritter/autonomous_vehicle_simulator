@@ -2,10 +2,12 @@
 #include <algorithm>
 #include <iostream>
 #include <fstream>
+#include <opencv2/videoio.hpp>
+#include <eigen3/Eigen/Dense>
+#include "config/constants.h"
 #include "../include/nlohmann/json.hpp"
-#include "Map2D.h"
-#include "../utils/utils.h"
-#include "spdlog/sinks/stdout_color_sinks-inl.h"
+#include "base/MapObject.h"
+#include "map/Map2D.h"
 
 using json = nlohmann::json;
 namespace fs = std::filesystem;
@@ -28,15 +30,10 @@ const std::unordered_map<Cell, std::array<std::uint8_t, 3>> default_cell_colors_
     {Cell::Free, {64,64,64}}, // dark gray
     {Cell::Road, {128,128,128}}, // light gray
     {Cell::Vehicle, {255,0,255}}, // pink
+    {Cell::Lidar, {0, 64, 128}}, // dark blue
     {Cell::Obstacle, {0,255,0}}, // green
     {Cell::Reserved, {255,192,255}} // light pink
 };
-
-spdlog::logger& Map2D::logger() {
-    static std::shared_ptr<spdlog::logger> logger_ =
-        spdlog::stderr_color_mt("Map2D");
-    return *logger_;
-}
 
 Cell Map2D::atPx(int x, int y) const {
     if (x < 0 || x >= width_ || y < 0 || y >= height_) {
@@ -97,6 +94,7 @@ std::string Map2D::cellToString(Cell cell) {
         case Cell::Free: return "Free";
         case Cell::Road: return "Road";
         case Cell::Vehicle: return "Vehicle";
+        case Cell::Lidar: return "Lidar";
         case Cell::Obstacle: return "Obstacle";
         case Cell::Reserved: return "Reserved";
         default: throw std::invalid_argument("Invalid cell type");
@@ -108,6 +106,7 @@ Cell Map2D::stringToCell(const std::string& cell_name) {
     if (cell_name == "Free") return Cell::Free;
     if (cell_name == "Road") return Cell::Road;
     if (cell_name == "Vehicle") return Cell::Vehicle;
+    if (cell_name == "Lidar") return Cell::Lidar;
     if (cell_name == "Obstacle") return Cell::Obstacle;
     if (cell_name == "Reserved") return Cell::Reserved;
     throw std::invalid_argument("Invalid cell name: " + cell_name);
@@ -115,8 +114,7 @@ Cell Map2D::stringToCell(const std::string& cell_name) {
 
 std::vector<Cell> Map2D::bmpToCells(const std::vector<std::array<uint8_t, 3> > &bmp_matrix) {
     std::vector<Cell> cells;
-    for (int i = 0; i < bmp_matrix.size(); ++i) {
-        const auto& color = bmp_matrix[i];
+    for (auto color : bmp_matrix) {
         cells.push_back(colorToCell(color));
     }
     return cells;
@@ -161,7 +159,7 @@ void Map2D::loadCellColors(const std::filesystem::path &path) {
     }
 }
 
-Map2D::Map2D(int width, int height, double res_m, Cell default_value) {
+Map2D::Map2D(int width, int height, double res_m) {
     if (width > MAX_MAP_WIDTH || height > MAX_MAP_HEIGHT) {
         throw std::out_of_range(std::format(
         "Map size exceeds maximum dimensions. Max width: {}, max height: {}", MAX_MAP_WIDTH, MAX_MAP_HEIGHT));
@@ -170,10 +168,15 @@ Map2D::Map2D(int width, int height, double res_m, Cell default_value) {
     height_ = height;
     resolution_ = res_m;
     //map_ = load_default_map(DEFAULT_MAP_FILE);
-    logger().info("Filling map with default value: {}. Map's size: ", cellToString(default_value), cellToString(default_value));
     map_data_.resize(width * height);
-    fillMapWith(default_value);
+    base_data_.resize(width * height);
+    objects_.clear();
+}
 
+Map2D::Map2D(int width, int height, double res_m, Cell default_value) {
+    Map2D(width, height, res_m);
+    logger().info("Filling map with default value: {}", cellToString(default_value));
+    fillMapWith(default_value);
 }
 
 Map2D Map2D::loadMap(const std::string &filename, double res_m) {
@@ -198,18 +201,64 @@ std::ostream& operator<<(std::ostream& os, Cell cell) {
     return os;
 }
 
-#ifdef WITH_OPENCV_DEBUG
-#include <opencv2/videoio.hpp>
+void Map2D::removeFootprints() const {
+    for (auto* obj: objects_) {
+        for (auto *cell: obj->footprint()) {
+            *cell = obj->cellType();
+        }
+    }
+}
 
-void Map2D::startMotionCapture()
+std::pair<int,int> Map2D::worldToCell(float world_x, float world_y) const
 {
+    int pixel_x = static_cast<int>(world_x / resolution_ + resolution_);
+    int pixel_y = static_cast<int>(world_y / resolution_ + resolution_);
+    return { std::clamp(pixel_x, 0, width_  - 1),
+         std::clamp(pixel_y, 0, height_ - 1) };
+}
+
+void Map2D::addObject(MapObject& object)
+{
+    objects_.push_back(&object);
+    object.setMap(this);  // set the map for the object
+}
+
+void Map2D::startSimulation() {
+    if (simulation_thread_.joinable()) {
+        logger().warn("Simulation already active. Ending previous simulation.");
+        endSimulation();
+    }
+
     capture_frames_.clear();
-    capture_active_ = true;
+    simulation_active_ = true;
+
+    // starts a thread that captures frames every update_period_ milliseconds
+    simulation_thread_ = std::thread([this]() {
+        // start updating all objects
+        unsigned int num_frames = 0;
+        base_data_ = map_data_;
+        const auto period = std::chrono::duration<float>(constants::step_size);
+        while (simulation_active_ && num_frames < max_frames_stored_)
+            {
+                for (auto* obj : objects_) obj->update();
+                using namespace std::chrono_literals;
+                this->removeFootprints();
+                this->addMotionFrame();  // capture the current frame
+                std::this_thread::sleep_for(period);
+                ++num_frames;
+                // swaps buffers
+                std::ranges::copy(base_data_, map_data_.begin());
+            }
+        if (num_frames > max_frames_stored_) {
+            logger().warn("Maximum number of frames stored reached: {}. Stopping simulation.", max_frames_stored_);
+        }
+        simulation_active_ = false;
+    });
 }
 
 void Map2D::addMotionFrame()
 {
-    if (!capture_active_) return;
+    if (!simulation_active_) return;
     cv::Mat frame(height_, width_, CV_8UC3);
     const auto bmp = toBmp();
     // TODO: parallelize with OpenMP
@@ -221,22 +270,54 @@ void Map2D::addMotionFrame()
     capture_frames_.push_back(std::move(frame));
 }
 
-void Map2D::endMotionCapture() {
-    if (!capture_active_) return;
-    if (capture_frames_.empty()) { capture_active_ = false; return; }
-    capture_active_ = false;
+void Map2D::endSimulation() {
+    if (simulation_thread_.joinable()) simulation_thread_.join();
+    simulation_active_ = false;
+    if (capture_frames_.empty()) return;
+}
+
+
+void Map2D::startSimulationFor(unsigned int seconds)
+{
+    if (simulation_thread_.joinable()) {
+        logger().warn("Simulation already active. Ending previous simulation.");
+        endSimulation();
+    }
+
+    capture_frames_.clear();
+    simulation_active_ = true;
+    base_data_ = map_data_;
+
+    simulation_thread_ = std::thread([this, seconds]() {
+        const auto period = std::chrono::duration<float>(constants::step_size);
+        auto start_time = std::chrono::steady_clock::now();
+
+        while (simulation_active_) {
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - start_time
+            ).count();
+            if (elapsed >= seconds) break;
+            for (auto* obj : objects_) obj->update();
+            this->removeFootprints();
+            this->addMotionFrame();
+            std::this_thread::sleep_for(period);
+            // swaps buffers
+            std::ranges::copy(base_data_, map_data_.begin());
+        }
+        simulation_active_ = false;   // auto-stop
+    });
 }
 
 void Map2D::addMotionFrame(const cv::Mat& annotated)
 {
-    if (!capture_active_) {
+    if (!simulation_active_) {
         throw std::runtime_error("Motion capture is not active. Call startMotionCapture() first.");
     };
 
     capture_frames_.push_back(annotated.clone());
 }
 
-void Map2D::flushMotionCapture(const std::string& filename, double fps)
+void Map2D::flushFrames(const std::string& filename)
 {
     if (capture_frames_.empty()) {
         logger().warn("No frames captured. Skipping video creation.");
@@ -245,13 +326,14 @@ void Map2D::flushMotionCapture(const std::string& filename, double fps)
 
     cv::VideoWriter w(filename,
                       cv::VideoWriter::fourcc('m','p','4','v'),
-                      fps,
+                      constants::FPS,
                       capture_frames_[0].size());
 
     for (const auto& f : capture_frames_) w.write(f);
     w.release();
 
     capture_frames_.clear();
+    logger().info("Video saved to {}", filename);
 }
 
 cv::Mat Map2D::renderToMat() const
@@ -266,7 +348,6 @@ cv::Mat Map2D::renderToMat() const
     return frame;
 }
 
-#endif
 
 
 

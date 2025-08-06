@@ -9,7 +9,10 @@ include_directories("$ENV{HOME}/.local/lib")
 include_directories(${OpenCV_INCLUDE_DIRS})
 message(STATUS "CMAKE_PREFIX_PATH: ${CMAKE_PREFIX_PATH}")
 
-# -- add all relevant compile flags here! --- #
+# Global compile flags
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
+
+# -- add all relevant compile macros here! --- #
 if (WITH_OPENCV_DEBUG)
     add_compile_definitions(WITH_OPENCV_DEBUG)
     message(STATUS "OpenCV debug mode enabled globally. Sensor's generateData method will generate video outputs.")
@@ -38,6 +41,7 @@ find_package(gRPC CONFIG REQUIRED)
 find_package(absl CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED) # open-ssl is needed for gRPC
 find_package(OpenCV REQUIRED) # opencv for video outputs when debugging sensors
+find_package(Eigen3 REQUIRED)
 
 # Path to the plugin
 find_program(GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin)
@@ -61,6 +65,9 @@ add_executable(vehicle_simulator.exe
         sensors/Lidar2D.cpp
         map/Map2D.cpp
         utils/utils.cpp
+        utils/logging.cpp
+        vehicle/Vehicle.cpp
+        base/MapObject.cpp
         ${PROTO_SRCS}
 )
 
@@ -91,10 +98,13 @@ enable_testing()
 
 # Create a small library with the production sources you need in tests
 add_library(testlib
-        ${PROJECT_SOURCE_DIR}/map/Map2D.cpp
-        ${PROJECT_SOURCE_DIR}/utils/utils.cpp
-        ${PROJECT_SOURCE_DIR}/sensors/Lidar2D.cpp
-        ${PROJECT_SOURCE_DIR}/sensors/Sensor.cpp
+        map/Map2D.cpp
+        utils/utils.cpp
+        sensors/Lidar2D.cpp
+        sensors/Sensor.cpp
+        vehicle/Vehicle.cpp
+        utils/logging.cpp
+        base/MapObject.cpp
         ${PROTO_SRCS}
 )
 target_include_directories(testlib PUBLIC
@@ -109,6 +119,7 @@ target_link_libraries(testlib PUBLIC
 add_executable(code_test
         ${PROJECT_SOURCE_DIR}/tests/test_map2d.cpp
         ${PROJECT_SOURCE_DIR}/tests/test_lidar2d.cpp
+        ${PROJECT_SOURCE_DIR}/tests/test_vehicle.cpp
 )
 
 ## Add opencv debug flag

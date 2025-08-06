@@ -4,27 +4,17 @@
 #include "sensors/Lidar2D.h"
 #include "map/Map2D.h"
 #include "utils/utils.h"
+#include "vehicle/Vehicle.h"
 #include <vector>
 
 int main() {
-    Map2D map = globalMap();
-    Lidar2D lidar("Lidar1", "front", &map, 10, Pose2D{10,10,0});
-    std::cout << "Sensor name: " << lidar.name() << std::endl;
-
-    std::vector input = {1, 2, 3, 4, 5};
-    std::unique_ptr<sensor_data::SensorData> data = lidar.generateData();
-
-    if (data->has_lidar_scan_2d()) {
-        float angleMin = data->lidar_scan_2d().angle_min();
-        std::cout << "Angle min: " << angleMin << std::endl;
-    } else {
-        std::cout << "No LidarScan2D data available." << std::endl;
-    }
-
-    std::cout << "Map width: " << map.width() << std::endl;
-    std::cout << "Map height: " << map.height() << std::endl;
-    std::cout << "Map resolution: " << map.resolution() << std::endl;
-    std::cout << "Map cell at (0, 0): " << static_cast<int>(map.atPx(0, 0)) << std::endl;
-    //std::cout << "Map cell class at (0, 0): " << map.atPx(0, 0) << std::endl;
+    Pose2D startPose{50.0, 50.0, 0.0}; // Starting position of the vehicle
+    double dt = 0.1; // Time step for simulation
+    Lidar2D lidar("lidar", "front", nullptr, 10, startPose); // Create a Lidar sensor
+    auto map = globalMap();
+    Vehicle car(startPose, 4.0, 2.0, {0,0,255});
+    car.addSensor(&lidar, Vehicle::MountSide::Front);
+    car.update(dt);                // integrates accel → speed → pose
+    map.stampVehicle(car);         // mark occupancy before rendering
 }
 

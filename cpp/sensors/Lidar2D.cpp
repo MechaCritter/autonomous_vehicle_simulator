@@ -1,6 +1,3 @@
-//
-// Created by vunha on 4/19/2025.
-//
 
 #include "Lidar2D.h"
 #include "../utils/utils.h"
@@ -21,51 +18,53 @@ double Lidar2D::castRay(double rel_angle, const Map2D &map, std::vector<std::pai
     /* start one step away to avoid hitting the vehicle cell itself */
     for (double d = step; d <= max_range_; d += step) {
 
-        const double wx = pose().x + d * cos(global_angle);
-        const double wy = pose().y + d * sin(global_angle);
+        const double world_x = pose().x + d * cos(global_angle);
+        const double world_y = pose().y + d * sin(global_angle);
 
-        float px_raw = wx / map.resolution();
-        float py_raw = wy / map.resolution();
+        auto [pixel_x, pixel_y] = map.worldToCell(world_x, world_y); // convert to pixel coordinates
 
-        int px, py;
-        int threshold_x = std::ceil(px_raw), threshold_y = std::ceil(py_raw);
-
-        if (threshold_x - px_raw < (std::sqrt(2) / 2) * map.resolution()) {
-            px = threshold_x; // round up
-        } else {
-            px = threshold_x - 1; // round down
-        }
-
-        if (threshold_y - py_raw < (std::sqrt(2) / 2) * map.resolution()) {
-            py = threshold_y;
-        } else {
-            py = threshold_y - 1;
-        }
+        // int px, py;
+        // int threshold_x = std::ceil(px_raw), threshold_y = std::ceil(py_raw);
+        //
+        // if (threshold_x - px_raw < (std::sqrt(2) / 2) * map.resolution()) {
+        //     px = threshold_x; // round up
+        // } else {
+        //     px = threshold_x - 1; // round down
+        // }
+        //
+        // if (threshold_y - py_raw < (std::sqrt(2) / 2) * map.resolution()) {
+        //     py = threshold_y;
+        // } else {
+        //     py = threshold_y - 1;
+        // }
 
         // if px and py are out of bounds, assume no obstacle => return max range
-        if (px < 0 || px >= map.width() || py < 0 || py >= map.height()) {
+        if (pixel_x < 0 || pixel_x >= map.width() || pixel_y < 0 || pixel_y >= map.height()) {
             return max_range_;
         }
 
-        if (cells) cells->emplace_back(px, py); // record path
+        if (cells) cells->emplace_back(pixel_x, pixel_y); // record path
 
-        const Cell c = map.atPx(px, py);
+        const Cell c = map.atPx(pixel_x, pixel_y);
         if (c == Cell::Obstacle || c == Cell::Vehicle || c == Cell::Reserved) {
             logger().info("Lidar {} hit obstacle {} at ({},{})",
-                           name(), Map2D::cellToString(c), px, py);
+                           name(), Map2D::cellToString(c), pixel_x, pixel_y);
             return d;
         }
     }
     return max_range_; // hit nothing
 }
 
+void Lidar2D::update() {
+    updateFootprint();
+}
 
 std::unique_ptr<sensor_data::SensorData> Lidar2D::generateData()
 {
     if (!map_) throw std::runtime_error("Lidar map pointer not set!");
 
 #ifdef WITH_OPENCV_DEBUG
-    if (!map_->isCapturing()) map_->startMotionCapture();
+    if (!map_->isSimulating()) map_->startSimulation();
 #endif
 
     auto data = std::make_unique<sensor_data::SensorData>();
@@ -126,10 +125,10 @@ std::unique_ptr<sensor_data::SensorData> Lidar2D::generateData()
 #ifdef WITH_OPENCV_DEBUG
     std::string vid = (lidar_debug_path /
                        (name() + "_" + std::to_string(scan->ranges_size()) + ".mp4")).string();
-    map_->endMotionCapture();
-    map_->flushMotionCapture(vid); // 15 fps
+    map_->endSimulation();
+    map_->flushFrames(vid); // 15 fps
 #endif
-    logger().info("Lidar {} produced scan [{}]", name(), oss.str());
+    logger().debug("Lidar {} produced scan [{}]", name(), oss.str());
     return data;
 }
 

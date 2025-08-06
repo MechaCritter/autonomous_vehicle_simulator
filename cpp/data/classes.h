@@ -35,13 +35,14 @@ using SensorDataVariant = std::variant<
  * @brief Represents different types of cells in a grid-based environment.
  * This will be used for the `Map2D` class to represent the state of each cell in the map.
  */
-enum class Cell : std::int8_t {
+enum class Cell : std::uint8_t {
     Unknown = 0,
     Free = 1,
     Road = 2,
     Vehicle = 3,
-    Obstacle = 4,
-    Reserved = 5
+    Lidar = 4,
+    Obstacle = 5,
+    Reserved = 6
 };
 
 #endif //CLASSES_H

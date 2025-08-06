@@ -1,0 +1,6 @@
+{
+  "root":   "debug",
+  "lidar":  "debug",
+  "Map2D":  "debug",
+  "Vehicle":  "debug"
+}
