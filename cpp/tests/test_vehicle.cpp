@@ -11,8 +11,6 @@ static std::shared_ptr<spdlog::logger> testLogger = spdlog::stdout_color_mt("Veh
 // Use same debug directory as other tests
 static std::filesystem::path output_debug_path = "/home/critter/workspace/autonomous_vehicle_simulator/cpp/tests/debug";
 
-// other global vars
-static float step_size = 0.001;
 // Parameter structure for vehicle kinematics tests
 struct VehicleKinematicsParam {
     Pose2D init_pose;
@@ -33,9 +31,7 @@ TEST_P(VehicleKinematicsTest, UpdatePose) {
     vehicle.setSpeedAndSteeringAngle(P.speed, P.steering_angle);
 
     // update the vehicle in a few time steps
-    for (float t = 0; t < P.timespan; t += step_size) {
-        vehicle.updateFor(step_size);
-    }
+    vehicle.updateFor(P.timespan);
     Pose2D result = vehicle.pose();
     testLogger->info("Updated pose: ({:.3f}, {:.3f}, {:.3f} rad)", result.x, result.y, result.theta);
     // Allow a tiny tolerance for floating-point arithmetic
@@ -92,8 +88,12 @@ TEST(VehicleSimulationTest, VehiclePathVideo) {
     //     // [For brevity, the drawing code is identical to the snippet provided earlier]
     //     // ...
     // }
-    vehicle1.setSpeedAndSteeringAngle(4, M_PI/6);
-    vehicle2.setSpeedAndSteeringAngle(7, 0.0); // straight line
+    vehicle1.setSpeedAndSteeringAngle(1, M_PI/6);
+    vehicle1.setAcceleration(10);
+    testLogger->info("Vehicle1 has motor force {:.2f} N", vehicle1.motorForce());
+    vehicle2.setSpeedAndSteeringAngle(2, 0.0); // straight line
+    vehicle2.setMotorForce(2000);
+    testLogger->info("Vehicle2 has acceleration {:.2f} m/s²", vehicle2.acceleration());
 
     // for (float t = 0; t < 10; t += step_size) {
     //     testLogger->info("Vehicle at ({:.1f},{:.1f}), theta {:.2f}", vehicle.pose().x,
@@ -106,12 +106,12 @@ TEST(VehicleSimulationTest, VehiclePathVideo) {
     while (map.simulationActive()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
         // Optionally, you can log the vehicle's position at each step
-        testLogger->info("Vehicle1 at ({:.1f},{:.1f}), theta {:.2f}",
-                         vehicle1.pose().x, vehicle1.pose().y, vehicle1.pose().theta);
+        testLogger->info("Vehicle1 at ({:.1f},{:.1f}), theta {:.2f}, current velocity: {:.2f}",
+                         vehicle1.pose().x, vehicle1.pose().y, vehicle1.pose().theta, vehicle1.speed());
         testLogger->info("Lidar at ({:.1f},{:.1f}), theta {:.2f}",
                          lidar.pose().x, lidar.pose().y, lidar.pose().theta);
-        testLogger->info("Vehicle2 at ({:.1f},{:.1f}), theta {:.2f}",
-                         vehicle2.pose().x, vehicle2.pose().y, vehicle2.pose().theta);
+        testLogger->info("Vehicle2 at ({:.1f},{:.1f}), theta {:.2f}, current velocity: {:.2f}",
+                         vehicle2.pose().x, vehicle2.pose().y, vehicle2.pose().theta, vehicle2.speed());
     }
     map.endSimulation();
     std::filesystem::path videoFile = output_debug_path / "vehicle_path.mp4";

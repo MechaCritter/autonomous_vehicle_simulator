@@ -4,10 +4,27 @@
 #include <eigen3/Eigen/Dense>
 #include <spdlog/spdlog.h>
 
+Vehicle::Vehicle(Pose2D init_pose,
+                 double length, double width,
+                 std::array<uint8_t,3> color_bgr,
+                 double init_speed,
+                 double init_accel)
+    : MapObject(init_pose, length, width),
+      color_bgr_(color_bgr),
+      speed_(init_speed),
+      accel_(init_accel)
+{
+    /* Compute inertial properties -------------------------------------- */
+    mass_  = constants::vehicle_density * length * width;
+    max_motor_force_ = mass_ * constants::g;              // traction-limited
+    motor_force_     = mass_ * accel_;
+}
 
 void Vehicle::addSensor(Sensor* s, MountSide side, double offset)
 {
     mounts_.push_back({s, side, offset});
+    // Add sensor mass to vehicle's total mass
+    mass_ += s->mass();
     updateSensors();   // place immediately
 }
 
@@ -41,6 +58,8 @@ void Vehicle::updateSensors() const {
 
 void Vehicle::update() {
     updating_ = true;
+    speed_ = std::clamp(speed_ + accel_ * constants::step_size, 0.0, max_speed_);
+    yaw_rate_ = std::tan(steering_angle_) / length_ * speed_;
     const double theta0 = pose_.theta; // save current pose
 
     /* --- after pose update, move all mounted sensors ------------------- */
@@ -63,37 +82,28 @@ void Vehicle::update() {
     updateSensors();
 }
 
-// void Vehicle::updateFootprint() {
-//     footprint_.clear();
-//     if (map_ == nullptr) { return;}
-//
-//     const double half_w = width_  * 0.5;
-//     const double half_l = length_ * 0.5;
-//
-//     /* ---- rectangle corners in body frame (CCW, front-left start) ---- */
-//     std::vector<Eigen::Vector2d> corners = {
-//                { half_l,  half_w}, { half_l, -half_w},
-//                 {-half_l, -half_w}, {-half_l,  half_w}
-//             };
-//     /* ---- rotate/translate into world frame --------------------------- */
-//     auto world = utils::transform(corners, pose_);
-//     int min_cx = map_->width(),  min_cy = map_->height();
-//     int max_cx = 0,              max_cy = 0;
-//     for (auto& p : world)
-//     {
-//         auto [cx, cy] = map_->worldToCell(p.x(), p.y());
-//         min_cx = std::min(min_cx, cx);  max_cx = std::max(max_cx, cx);
-//         min_cy = std::min(min_cy, cy);  max_cy = std::max(max_cy, cy);
-//     }
-//     min_cx = std::clamp(min_cx, 0, map_->width()-1);
-//     max_cx = std::clamp(max_cx, 0, map_->width()-1);
-//     min_cy = std::clamp(min_cy, 0, map_->height()-1);
-//     max_cy = std::clamp(max_cy, 0, map_->height()-1);
-//     bbox_ = {min_cx,min_cy,max_cx,max_cy};
-//
-//     footprint_.reserve(static_cast<std::size_t>((max_cx-min_cx+1)*(max_cy-min_cy+1)));
-//     for (int y=min_cy; y<=max_cy; ++y)
-//         for (int x=min_cx; x<=max_cx; ++x)
-//             if (utils::pointIsInRotatedRechtangle(x, y, map_->resolution(), *this))
-//                 footprint_.push_back(map_->cellPtr(x,y));
-// }
+void Vehicle::setAcceleration(double accel)
+{
+    const double req_F = mass_ * accel;
+    if (std::fabs(req_F) > max_motor_force_) {
+        logger().warn("Requested acceleration {:.2f} m/s² requires {:.1f} N > {:.1f} N. Clamping.",
+                      accel, req_F, max_motor_force_);
+        motor_force_ = std::copysign(max_motor_force_, req_F);
+        accel_ = motor_force_ / mass_;
+    } else {
+        accel_ = accel;
+        motor_force_ = req_F;
+    }
+}
+
+void Vehicle::setMotorForce(double force)
+{
+    if (std::fabs(force) > max_motor_force_) {
+        logger().warn("Requested motor force {:.1f} N exceeds max {:.1f} N. Clamping.",
+                      force, max_motor_force_);
+        motor_force_ = std::copysign(max_motor_force_, force);
+    } else {
+        motor_force_ = force;
+    }
+    accel_ = motor_force_ / mass_;
+}

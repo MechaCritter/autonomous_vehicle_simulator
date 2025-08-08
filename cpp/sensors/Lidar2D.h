@@ -34,6 +34,15 @@ public:
     // Override the generateData function from Sensor.
     [[nodiscard]] std::unique_ptr<sensor_data::SensorData> generateData() override;
 
+#ifdef WITH_OPENCV_DEBUG
+    /**
+     * @brief Generate debug visualization video showing lidar rays
+     * @param video_filename Path where the video should be saved
+     * @return std::unique_ptr<sensor_data::SensorData> The sensor data
+     */
+    [[nodiscard]] std::unique_ptr<sensor_data::SensorData> generateDataWithDebugVideo(const std::string& video_filename);
+#endif
+
     // Getters
     [[nodiscard]] int nBeams() const noexcept { return n_beams_; }
     [[nodiscard]] double fov() const noexcept { return fov_; }

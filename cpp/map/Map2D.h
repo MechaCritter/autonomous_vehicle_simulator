@@ -212,7 +212,6 @@ public:
     /** Flush the buffer to an .mp4 file and reset the capture
      *
      * @param filename The name of the output video file
-     * @param fps The frames per second of the output video
      */
     void flushFrames(const std::string& filename);
 

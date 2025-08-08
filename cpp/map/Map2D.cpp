@@ -173,8 +173,9 @@ Map2D::Map2D(int width, int height, double res_m) {
     objects_.clear();
 }
 
-Map2D::Map2D(int width, int height, double res_m, Cell default_value) {
-    Map2D(width, height, res_m);
+Map2D::Map2D(int width, int height, double res_m, Cell default_value)
+    :Map2D(width, height, res_m)  // call the other constructor
+{
     logger().info("Filling map with default value: {}", cellToString(default_value));
     fillMapWith(default_value);
 }
@@ -271,8 +272,8 @@ void Map2D::addMotionFrame()
 }
 
 void Map2D::endSimulation() {
-    if (simulation_thread_.joinable()) simulation_thread_.join();
     simulation_active_ = false;
+    if (simulation_thread_.joinable()) simulation_thread_.join();
     if (capture_frames_.empty()) return;
 }
 

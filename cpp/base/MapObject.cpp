@@ -6,6 +6,7 @@
 #include "map/Map2D.h"
 #include "config/constants.h"
 
+IdPool16 MapObject::s_pool{};
 
 void MapObject::updateFor(unsigned int duration) {
     requestStartUpdate();

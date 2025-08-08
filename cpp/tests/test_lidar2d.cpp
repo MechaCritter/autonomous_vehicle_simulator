@@ -11,7 +11,7 @@
 std::shared_ptr<spdlog::logger> logger = spdlog::stdout_color_mt("Testing");
 std::filesystem::path output_debug_path = "/home/critter/workspace/autonomous_vehicle_simulator/cpp/tests/debug";
 
-#ifdef LIDAR_DEBUG                                       // build flag
+#ifdef WITH_OPENCV_DEBUG                                       // build flag
 constexpr bool DEBUG_IMG = true;
 #else
 constexpr bool DEBUG_IMG = false;
@@ -29,8 +29,8 @@ struct RayDistanceResult {
 struct LidarParam {
     int test_id; // just for logging
     float  res;          // [m/px]
-    int    width;
-    int    height;
+    int    map_width; // map's width
+    int    map_height; // map's height
     int    obs_x, obs_y; // obstacle pixel
     int    px,   py;     // lidar pixel
     float    theta_in_deg; // lidar orientation in degrees
@@ -48,7 +48,7 @@ class LidarParamTest : public ::testing::TestWithParam<LidarParam> {};
 *
 * The distance is Euclidean unless the obstacle cell is `Free` or `Road`,
 * in which case the beam should pass through and the expected distance is
-* the sensor’s maximum range.
+* the sensor's maximum range.
 *
 * @param P               Current test parameters.
 * @param scan_angle_min  The minimum angle of the lidar scan in radians.
@@ -106,10 +106,10 @@ TEST_P(LidarParamTest, GenerateData)
 {
     const auto P = GetParam();
     logger->info("Running LidarParamTest with parameters: res={}, width={}, height={}, obs_x={}, obs_y={}, px={}, py={}, obstacle_cls={}. Test ID: {}",
-                  P.res, P.width, P.height, P.obs_x, P.obs_y, P.px, P.py, static_cast<int>(P.obstacle_cls), P.test_id);
+                  P.res, P.map_width, P.map_height, P.obs_x, P.obs_y, P.px, P.py, static_cast<int>(P.obstacle_cls), P.test_id);
     logger->info("Output debug path: {}", output_debug_path.string());
 
-    Map2D map(P.width, P.height, P.res, Cell::Free);
+    Map2D map(P.map_width, P.map_height, P.res, Cell::Free);
     map.setPx(P.obs_x, P.obs_y, P.obstacle_cls);
 
     // tolerance = half the resolution + a tolerance of 1e-3
@@ -118,7 +118,24 @@ TEST_P(LidarParamTest, GenerateData)
     float theta_in_rad = P.theta_in_deg * M_PI / 180.0f; // convert degrees to radians
     std::string lidar_name = "lid_testid" + std::to_string(P.test_id);
     Lidar2D lidar(lidar_name, "front",&map, 10, Pose2D{P.px * P.res,P.py * P.res, theta_in_rad});
-    auto data = lidar.generateData();
+
+    std::unique_ptr<sensor_data::SensorData> data;
+
+#ifdef WITH_OPENCV_DEBUG
+    if constexpr (DEBUG_IMG) {
+        // Generate debug video when DEBUG_IMG is enabled
+        std::string video_filename = (output_debug_path /
+            (lidar_name + "_debug.mp4")).string();
+        data = lidar.generateDataWithDebugVideo(video_filename);
+        logger->info("Debug video saved to: {}", video_filename);
+    } else {
+        // Normal data generation without debug visualization
+        data = lidar.generateData();
+    }
+#else
+    // Always use normal data generation when WITH_OPENCV_DEBUG is not defined
+    data = lidar.generateData();
+#endif
 
     ASSERT_TRUE(data->has_lidar_scan_2d());
     auto& scan = data->lidar_scan_2d();

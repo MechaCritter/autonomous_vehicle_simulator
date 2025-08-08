@@ -4,6 +4,7 @@
 #include "../data/classes.h"      // for Pose2D
 #include "../base/MapObject.h"
 #include "../utils/logging.h"    // for logging
+#include "../config/constants.h" // for vehicle_density
 #include <array>
 #include <algorithm>
 #include <cmath>
@@ -23,24 +24,43 @@ public:
      * @param width       Vehicle width in meters.
      * @param color_bgr   BGR color of the vehicle for visualization (e.g. {255,0,0} for blue).
      * @param init_speed  Initial linear speed in m/s (default 0).
+     * @param init_accel  Initial linear acceleration in m/s^2 (default 0).
      */
     Vehicle(Pose2D init_pose,
                      double length, double width,
                      std::array<uint8_t,3> color_bgr,
-                     double init_speed)
-        : MapObject(init_pose, length, width),   // ← initialise the base sub-object
-          color_bgr_(color_bgr),
-          speed_(init_speed)                     // Vehicle’s own members
-    {}
+                     double init_speed = 0.0,
+                     double init_accel = 0.0);
 
     // Getters
     [[nodiscard]] std::array<uint8_t,3> color() const { return color_bgr_; }
     [[nodiscard]] double speed() const { return speed_; }
     [[nodiscard]] double yawRate() const { return yaw_rate_; }
+    [[nodiscard]] double acceleration() const { return accel_; }
+    [[nodiscard]] double motorForce() const { return motor_force_; }
+    [[nodiscard]] double maxMotorForce() const { return max_motor_force_; }
+    [[nodiscard]] double maxSpeed() const { return max_speed_; }
+    [[nodiscard]] double steeringAngle() const { return steering_angle_; }
+    [[nodiscard]] double maxSteeringAngle() const { return max_steering_angle_; }
 
     // Setters
     // control variables
     void setSpeed(double speed) {speed_ = std::clamp(speed, 0.0, max_speed_);}
+    /**
+     * @brief Set target linear acceleration. Internally converts it to the
+     *        required motor force and clamps to @c maxForceOutput().
+     * @param accel Target linear acceleration in m/s^2.
+     */
+    void setAcceleration(double accel);
+
+    /**
+     * @brief Directly command a motor force. Internally translated into
+     *        acceleration and clamped to @c maxForceOutput().
+     *
+     *    @param force Target motor force in Newtons.
+     */
+    void setMotorForce(double force);
+
     void setSteeringAngle(double angle) {
         steering_angle_ = std::clamp(angle, -max_steering_angle_, max_steering_angle_);
         yaw_rate_ = std::tan(steering_angle_) / length_ * speed_;
@@ -106,13 +126,15 @@ private:
         MountSide    side;
         double       offset;   ///< lateral (Left/Right) or longitudinal (Front/Back) shift [m]
     };
-    std::array<uint8_t,3> color_bgr_;   ///< Vehicle color (BGR format)
-    double speed_;                      ///< Linear speed (m/s)
-    double max_speed_{30.0};         ///< Maximum speed (m/s)
-    double yaw_rate_{0.0};                   ///< Angular turn rate (rad/s)
-    double steering_angle_ {0.0}; ///< Steering angle (radians), default 0
-    double max_steering_angle_ {M_PI/3};
-    double accel_ {0.0};              ///< Linear acceleration (m/s^2), default 0
+    std::array<uint8_t,3> color_bgr_;   ///< BGR
+    double speed_;                      ///< m/s
+    double motor_force_{0.0};           ///< N
+    double max_motor_force_{0.0};       ///< N, computed as mass * g
+    double max_speed_{constants::max_vehicle_speed};///< m/s
+    double yaw_rate_{0.0};              ///< rad/s
+    double steering_angle_ {0.0};       ///< rad
+    double max_steering_angle_ {M_PI/3};   ///< rad
+    double accel_ {0.0};              ///<  (m/s^2)
     std::vector<Mount> mounts_;
     /**
      * @brief Push updated poses to mounted sensors as the vehicle moves.

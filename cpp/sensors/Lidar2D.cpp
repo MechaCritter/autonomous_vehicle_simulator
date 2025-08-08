@@ -1,4 +1,3 @@
-
 #include "Lidar2D.h"
 #include "../utils/utils.h"
 #include <chrono>
@@ -63,10 +62,6 @@ std::unique_ptr<sensor_data::SensorData> Lidar2D::generateData()
 {
     if (!map_) throw std::runtime_error("Lidar map pointer not set!");
 
-#ifdef WITH_OPENCV_DEBUG
-    if (!map_->isSimulating()) map_->startSimulation();
-#endif
-
     auto data = std::make_unique<sensor_data::SensorData>();
 
     auto* hdr = data->mutable_header();
@@ -86,8 +81,43 @@ std::unique_ptr<sensor_data::SensorData> Lidar2D::generateData()
 
     for (int i = 0; i < n_beams_; ++i) {
         double angle = angle_min_ + i * angle_increment_;
+        double range = castRay(angle, *map_, nullptr); // no cells needed for basic operation
+        scan->add_ranges(range);
+        oss << range << (i+1 == n_beams_ ? "" : ", ");
+    }
+
+    logger().debug("Lidar {} produced scan [{}]", name(), oss.str());
+    return data;
+}
 
 #ifdef WITH_OPENCV_DEBUG
+std::unique_ptr<sensor_data::SensorData> Lidar2D::generateDataWithDebugVideo(const std::string& video_filename)
+{
+    if (!map_) throw std::runtime_error("Lidar map pointer not set!");
+
+    auto data = std::make_unique<sensor_data::SensorData>();
+
+    auto* hdr = data->mutable_header();
+    hdr->set_name(name());
+    hdr->set_sensor_id(id());
+    hdr->set_sensor_type(sensorType());
+    auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
+    std::chrono::system_clock::now()).time_since_epoch().count();
+    hdr->set_timestamp(static_cast<uint64_t>(now));
+
+    auto* scan = data->mutable_lidar_scan_2d();
+    scan->set_angle_min(angle_min_);
+    scan->set_angle_increment(angle_increment_);
+    scan->set_max_range(max_range_);
+
+    std::ostringstream oss;
+
+    // Start motion capture for debug video
+    map_->startSimulation();
+
+    for (int i = 0; i < n_beams_; ++i) {
+        double angle = angle_min_ + i * angle_increment_;
+
         std::vector<std::pair<int,int>> cells;
         double range = castRay(angle, *map_, &cells); // get cells hit by the ray
         cv::Mat frame = map_->renderToMat();
@@ -99,7 +129,6 @@ std::unique_ptr<sensor_data::SensorData> Lidar2D::generateData()
                       cv::Point(cx-1, cy-1), cv::Point(cx+1, cy+1),
                       cv::Scalar(0,255,255), cv::FILLED);
 
-        // place to store the cells that the ray passes through
         /* red beam pixels */
         for (auto [x, y] : cells)
             frame.at<cv::Vec3b>(y, x) = {0,0,255};
@@ -115,22 +144,16 @@ std::unique_ptr<sensor_data::SensorData> Lidar2D::generateData()
         }
 
         map_->addMotionFrame(frame);      // one frame per beam
-#else
-        double range = castRay(angle, *map_, nullptr); // no cells needed
-#endif
+
         scan->add_ranges(range);
         oss << range << (i+1 == n_beams_ ? "" : ", ");
     }
 
-#ifdef WITH_OPENCV_DEBUG
-    std::string vid = (lidar_debug_path /
-                       (name() + "_" + std::to_string(scan->ranges_size()) + ".mp4")).string();
+    // End simulation and save video
     map_->endSimulation();
-    map_->flushFrames(vid); // 15 fps
-#endif
-    logger().debug("Lidar {} produced scan [{}]", name(), oss.str());
+    map_->flushFrames(video_filename);
+
+    logger().debug("Lidar {} produced scan [{}] with debug video saved to {}", name(), oss.str(), video_filename);
     return data;
 }
-
-
-
+#endif
