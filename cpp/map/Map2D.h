@@ -1,16 +1,17 @@
 #ifndef MAP2D_H
 #define MAP2D_H
 #include <vector>
-#include <format>
 #include <opencv2/opencv.hpp>
 #include <string>
 #include <filesystem>
 #include <unordered_map>
+#include <box2d/box2d.h>
 
 #include "../data/classes.h"
 #include "../utils/utils.h"
 #include "../utils/logging.h"
-#include "../base/MapObject.h"
+#include "../objects/MapObject.h"
+#include <../setup/Setup.h>
 
 constexpr int MAX_MAP_WIDTH = 1000;
 constexpr int MAX_MAP_HEIGHT = 1000;
@@ -181,29 +182,24 @@ public:
      */
     void addObject(MapObject& object);
 
-    /**
-     * @brief Removes all the footprints of the objects on the map and
-     * restores the previous cell values.
-     */
-     void removeFootprints() const;
-
     /** Start buffering frames of the current map view in a separate thread.
-     * When this method is called, it updates the motion of the objects on
-     * it until the *endSimulation()* method is called, or the max. frame count
-     * is reached.
+     * When this method is called, it updates the motion of the objects.
+     *
+     * If the object is not started yet, it will be frozen immediately by
+     * setting its velocity to zero.
+     *
+     * @note This method returns immediately; the simulation runs in a separate thread.
+     * @note If the max. frame count is reached, the simulation will stop automatically.
+     * @note If the simulation is already running, the current simulation will be stopped
+     *      and a new one will be started.
      */
     void startSimulation();
 
     /**
-     * @brief Starts the simulation for a specified duration in seconds.
-     * The simulation will run and update the map and objects for the given time,
-     * then automatically stop.
-     *
-     * @param seconds Duration to run the simulation, in seconds.
+     * @brief Capture a frame by drawing the static map, then overlaying
+     *        each object's polygon filled in its BGR color.
+     * @details Does NOT mutate map_data_; it uses the physics state for positions.
      */
-    void startSimulationFor(unsigned int seconds);
-
-    /** Add one frame (current map state) to the buffer         */
     void addMotionFrame();
 
     /** Terminates the simulation thread */
@@ -259,14 +255,17 @@ public:
 
 private:
     [[nodiscard]] int idx(int x, int y) const noexcept { return y * width_ + x; }
+    [[nodiscard]] std::pair<int, int> idxToPx(int idx) const noexcept {
+        return {idx % width_, idx / width_};
+    }
     int width_ = MAX_MAP_WIDTH;
     int height_ = MAX_MAP_HEIGHT;
     double resolution_ = DEFAULT_MAP_RESOLUTION; // meters/pixel
     int origin_x_ = 0; // origin x coordinate in pixels
     int origin_y_ = 0; // origin y coordinate in pixels
     std::vector<Cell> map_data_;
-    std::vector<Cell> base_data_;        ///< immutable background (roads, obstacles …)
     std::vector<MapObject*> objects_;    ///< dynamic objects attached to this map
+    bool obstacles_built_{false};
     // A hash table that maps each cell type to its corresponding BGR color.
     static std::unordered_map<Cell, std::array<std::uint8_t, 3>> cell_colors_;
 
@@ -278,15 +277,25 @@ private:
     bool simulation_active_{false};
     std::vector<cv::Mat> capture_frames_;
     unsigned int max_frames_stored_{100000};
+
+    // Cache for the original frame without dynamic objects
+    mutable cv::Mat cached_original_frame_;
+    mutable bool frame_cache_valid_{false};
+
+    /** Initialize or refresh the cached original frame */
+    void initializeCachedFrame() const;
+
+    /** Invalidate the cached frame (call when static map data changes) */
+    void invalidateFrameCache() const;
 };
 
 /**
-     * @brief Overloads the << operartor to allow printing the Cell enum to an output stream as a string.
-     *
-     * @param os The output stream
-     * @param cell The Cell enum to print
-     * @return std::ostream& The output stream
-     */
+ * @brief Overloads the << operartor to allow printing the Cell enum to an output stream as a string.
+ *
+ * @param os The output stream
+ * @param cell The Cell enum to print
+ * @return std::ostream& The output stream
+ */
 std::ostream& operator<<(std::ostream& os, Cell cell);
 
 /**

@@ -2,11 +2,12 @@
 #include <algorithm>
 #include <iostream>
 #include <fstream>
+#include <unordered_set>
 #include <opencv2/videoio.hpp>
-#include <eigen3/Eigen/Dense>
+#include <opencv2/imgproc.hpp>
 #include "config/constants.h"
 #include "../include/nlohmann/json.hpp"
-#include "base/MapObject.h"
+#include "../objects/MapObject.h"
 #include "map/Map2D.h"
 
 using json = nlohmann::json;
@@ -21,6 +22,7 @@ struct CellColorLoader {
         Map2D::loadCellColors(cell_color_data_json);
     }
 };
+
 
 // this class was created only so that the cell colors are loaded
 static CellColorLoader init_cell_colors;
@@ -43,12 +45,14 @@ Cell Map2D::atPx(int x, int y) const {
     return map_data_[idx(x, y)];
 }
 
-void Map2D::setPx(int x, int y, Cell value) {
+void Map2D::setPx(int x, int y, Cell cell) {
     if (x < 0 || x >= width_ || y < 0 || y >= height_) {
         throw std::out_of_range(std::format(
         "Coordinates out of bounds. Max x range: {}, max y range: {}", width_, height_));
     };
-    map_data_[idx(x, y)] = value;
+    map_data_[idx(x, y)] = cell;
+    // Invalidate cache when static map data changes
+    invalidateFrameCache();
 }
 
 Map2D Map2D::window(int cx, int cy, int radius_px) const {
@@ -150,11 +154,6 @@ void Map2D::loadCellColors(const std::filesystem::path &path) {
     for (auto& [cell_name, color_json] : j.items()) {
         Cell cell = stringToCell(cell_name);
         std::array<unsigned char, 3> color = color_json.get<std::array<unsigned char, 3>>();
-        auto max = *std::ranges::max_element(color);
-        auto min = *std::ranges::min_element(color);
-        if (max > 255 || min < 0) {
-            throw std::invalid_argument("Color values must be in the range [0, 255]");
-        }
         cell_colors_[cell] = color;
     }
 }
@@ -169,8 +168,8 @@ Map2D::Map2D(int width, int height, double res_m) {
     resolution_ = res_m;
     //map_ = load_default_map(DEFAULT_MAP_FILE);
     map_data_.resize(width * height);
-    base_data_.resize(width * height);
     objects_.clear();
+    frame_cache_valid_ = false;
 }
 
 Map2D::Map2D(int width, int height, double res_m, Cell default_value)
@@ -202,14 +201,6 @@ std::ostream& operator<<(std::ostream& os, Cell cell) {
     return os;
 }
 
-void Map2D::removeFootprints() const {
-    for (auto* obj: objects_) {
-        for (auto *cell: obj->footprint()) {
-            *cell = obj->cellType();
-        }
-    }
-}
-
 std::pair<int,int> Map2D::worldToCell(float world_x, float world_y) const
 {
     int pixel_x = static_cast<int>(world_x / resolution_ + resolution_);
@@ -237,18 +228,24 @@ void Map2D::startSimulation() {
     simulation_thread_ = std::thread([this]() {
         // start updating all objects
         unsigned int num_frames = 0;
-        base_data_ = map_data_;
         const auto period = std::chrono::duration<float>(constants::step_size);
         while (simulation_active_ && num_frames < max_frames_stored_)
             {
-                for (auto* obj : objects_) obj->update();
+                for (MapObject* obj : objects_) {
+                    if (obj->isStarted()) {
+                        obj->update();
+                    }
+                    else {
+                        obj->freeze();
+                    }
+                }
+                b2World_Step(WORLD, constants::step_size, 4);
+                // bounce response (perfectly rigid bodies)
                 using namespace std::chrono_literals;
-                this->removeFootprints();
                 this->addMotionFrame();  // capture the current frame
                 std::this_thread::sleep_for(period);
                 ++num_frames;
                 // swaps buffers
-                std::ranges::copy(base_data_, map_data_.begin());
             }
         if (num_frames > max_frames_stored_) {
             logger().warn("Maximum number of frames stored reached: {}. Stopping simulation.", max_frames_stored_);
@@ -257,17 +254,59 @@ void Map2D::startSimulation() {
     });
 }
 
+void Map2D::initializeCachedFrame() const {
+    if (frame_cache_valid_) return;
+
+    cached_original_frame_ = cv::Mat(height_, width_, CV_8UC3);
+    const auto bmp = toBmp();
+
+    // TODO: parallelize with OpenMP
+    for (int y = 0; y < height_; ++y) {
+        for (int x = 0; x < width_; ++x) {
+            const auto& c = bmp[y * width_ + x]; // RGB → BGR
+            cached_original_frame_.at<cv::Vec3b>(y, x) = { c[2], c[1], c[0] };
+        }
+    }
+    frame_cache_valid_ = true;
+}
+
+void Map2D::invalidateFrameCache() const {
+    frame_cache_valid_ = false;
+}
+
 void Map2D::addMotionFrame()
 {
     if (!simulation_active_) return;
-    cv::Mat frame(height_, width_, CV_8UC3);
-    const auto bmp = toBmp();
-    // TODO: parallelize with OpenMP
-    for (int y = 0; y < height_; ++y)
-        for (int x = 0; x < width_; ++x) {
-            const auto& c = bmp[y * width_ + x];                 // RGB → BGR
-            frame.at<cv::Vec3b>(y, x) = { c[2], c[1], c[0] };
+
+    // Ensure cached frame is valid
+    initializeCachedFrame();
+
+    // Copy the cached original frame
+    cv::Mat frame = cached_original_frame_.clone();
+
+    // 2) overlay each dynamic object's current polygon from Box2D
+    for (const MapObject* obj : objects_) {
+        const auto corners = obj->worldBoxCorners();
+
+        std::array<cv::Point, 4> poly{};
+        for (size_t i = 0; i < 4; ++i) {
+            // world meters -> pixel coords
+            const int ix = std::lround(corners[i].x / resolution_);
+            const int iy = std::lround(corners[i].y / resolution_);
+
+            poly[i].x = std::clamp(ix, 0, width_  - 1);
+            poly[i].y = std::clamp(iy, 0, height_ - 1);
         }
+
+        const auto bgr = obj->colorBGR();
+        cv::fillConvexPoly(
+            frame,
+            poly.data(),
+            static_cast<int>(poly.size()),
+            cv::Scalar(bgr[0], bgr[1], bgr[2]),
+            cv::LINE_AA
+        );
+    }
     capture_frames_.push_back(std::move(frame));
 }
 
@@ -275,38 +314,6 @@ void Map2D::endSimulation() {
     simulation_active_ = false;
     if (simulation_thread_.joinable()) simulation_thread_.join();
     if (capture_frames_.empty()) return;
-}
-
-
-void Map2D::startSimulationFor(unsigned int seconds)
-{
-    if (simulation_thread_.joinable()) {
-        logger().warn("Simulation already active. Ending previous simulation.");
-        endSimulation();
-    }
-
-    capture_frames_.clear();
-    simulation_active_ = true;
-    base_data_ = map_data_;
-
-    simulation_thread_ = std::thread([this, seconds]() {
-        const auto period = std::chrono::duration<float>(constants::step_size);
-        auto start_time = std::chrono::steady_clock::now();
-
-        while (simulation_active_) {
-            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                std::chrono::steady_clock::now() - start_time
-            ).count();
-            if (elapsed >= seconds) break;
-            for (auto* obj : objects_) obj->update();
-            this->removeFootprints();
-            this->addMotionFrame();
-            std::this_thread::sleep_for(period);
-            // swaps buffers
-            std::ranges::copy(base_data_, map_data_.begin());
-        }
-        simulation_active_ = false;   // auto-stop
-    });
 }
 
 void Map2D::addMotionFrame(const cv::Mat& annotated)
@@ -339,22 +346,8 @@ void Map2D::flushFrames(const std::string& filename)
 
 cv::Mat Map2D::renderToMat() const
 {
-    cv::Mat frame(height_, width_, CV_8UC3);
-    const auto bmp = toBmp();                                  // uses existing util :contentReference[oaicite:0]{index=0}
-    for (int y = 0; y < height_; ++y)
-        for (int x = 0; x < width_; ++x) {
-            const auto& c = bmp[y * width_ + x];
-            frame.at<cv::Vec3b>(y, x) = { c[2], c[1], c[0] };  // RGB→BGR
-        }
-    return frame;
+    // Use cached frame if available
+    initializeCachedFrame();
+    return cached_original_frame_.clone();
 }
-
-
-
-
-
-
-
-
-
 

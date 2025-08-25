@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
 #include <cmath>
-#include <spdlog/spdlog.h>
+#include <include/spdlog/spdlog.h>
 #include <filesystem>
-#include <spdlog/sinks/basic_file_sink.h>
-#include "../sensors/Lidar2D.h"
+#include <include/spdlog/sinks/basic_file_sink.h>
+#include "../objects/sensors/Lidar2D.h"
 #include "../map/Map2D.h"
 #include "../data/classes.h"
 
@@ -20,10 +20,12 @@ constexpr bool DEBUG_IMG = false;
 // TODO: use this RayDistanceResult for the test. Build a dictionary mapping each Ray Distance to the desired exp_distance.
 // TODO: the exp_distance is called right after declaring the struct.
 struct RayDistanceResult {
-    Pose2D pose;
-    double rel_angle;
+    float init_x;
+    float init_y;
+    float init_theta;
+    float rel_angle;
     std::array<double, 2> obstacle_coord;
-    double exp_distance;
+    float exp_distance;
 };
 
 struct LidarParam {
@@ -108,7 +110,7 @@ TEST_P(LidarParamTest, GenerateData)
     logger->info("Running LidarParamTest with parameters: res={}, width={}, height={}, obs_x={}, obs_y={}, px={}, py={}, obstacle_cls={}. Test ID: {}",
                   P.res, P.map_width, P.map_height, P.obs_x, P.obs_y, P.px, P.py, static_cast<int>(P.obstacle_cls), P.test_id);
     logger->info("Output debug path: {}", output_debug_path.string());
-
+    setupWorld();
     Map2D map(P.map_width, P.map_height, P.res, Cell::Free);
     map.setPx(P.obs_x, P.obs_y, P.obstacle_cls);
 
@@ -117,7 +119,7 @@ TEST_P(LidarParamTest, GenerateData)
 
     float theta_in_rad = P.theta_in_deg * M_PI / 180.0f; // convert degrees to radians
     std::string lidar_name = "lid_testid" + std::to_string(P.test_id);
-    Lidar2D lidar(lidar_name, "front",&map, 10, Pose2D{P.px * P.res,P.py * P.res, theta_in_rad});
+    Lidar2D lidar(lidar_name, "front",&map, 10, 2, 2, theta_in_rad, P.px * P.res,P.py * P.res);
 
     std::unique_ptr<sensor_data::SensorData> data;
 

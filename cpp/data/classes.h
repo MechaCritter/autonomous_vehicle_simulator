@@ -3,20 +3,9 @@
 #include <variant>
 #include <cstdint>
 #include <unordered_map>
+#include <vector>
+#include <box2d/box2d.h>
 
-
-/**
- * @brief Represents a 2D pose with position and orientation
- * @details This structure defines a pose in 2D space consisting of:
- *          - x: position along x-axis in meters
- *          - y: position along y-axis in meters
- *          - theta: orientation angle in radians
- */
-struct Pose2D {
-    double x;
-    double y;
-    double theta;
-};
 
 // Forward declarations for sensor data types
 struct LidarScan2D;
@@ -44,5 +33,29 @@ enum class Cell : std::uint8_t {
     Obstacle = 5,
     Reserved = 6
 };
+
+/**
+ * @brief Physics-related structures for Box2D integration
+ */
+namespace physics {
+    inline std::unordered_map<Cell, float> friction_map = {
+        {Cell::Free, 0.0f},      // Free space
+        {Cell::Road, 0.9f},      // Road surface
+        {Cell::Vehicle, 0.0f},   // Vehicle on vehicle
+        {Cell::Lidar, 0.0f},     // Lidar sensor area
+        {Cell::Obstacle, 0.9f},  // Obstacle area
+        {Cell::Reserved, 0.00001f}   // Reserved area
+    };
+
+    /**
+     * @brief Describes the shape properties of a physics object
+     */
+    enum class ShapeType {
+        Box,
+        Circle,
+        Polygon
+    };
+
+}
 
 #endif //CLASSES_H

@@ -1,9 +1,9 @@
 #pragma once
-#include <spdlog/spdlog.h>
+#include <include/spdlog/spdlog.h>
 #include <unordered_map>
 #include <memory>
 #include <string>
-#include "spdlog/sinks/stdout_color_sinks-inl.h"
+#include <include/spdlog/sinks/stdout_color_sinks.h>
 
 namespace utils {
 
