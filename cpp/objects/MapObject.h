@@ -5,7 +5,7 @@
 #ifndef MAPOBJECT_H
 #define MAPOBJECT_H
 
-#include "data/classes.h"
+#include "data/DataClasses.h"
 #include <../setup/Setup.h>
 #include <include/spdlog/spdlog.h>
 #include <include/spdlog/sinks/stdout_color_sinks.h>
@@ -67,6 +67,17 @@ struct BodyDescriptor {
         body_def.linearVelocity = { speed * std::cos(angle_rad),
             speed * std::sin(angle_rad) };
     }
+
+    // make non-copyable (identity should be unique)
+    BodyDescriptor(const BodyDescriptor&) = delete;
+    BodyDescriptor& operator=(const BodyDescriptor&) = delete;
+
+    ~BodyDescriptor() {
+        if (b2Body_IsValid(bodyId)) {
+            b2DestroyShape(shapeId, true);
+            b2DestroyBody(bodyId);
+        }
+    }
 };
 
 inline std::shared_ptr<spdlog::logger> rootLogger = spdlog::stdout_color_mt("root");
@@ -104,12 +115,14 @@ public:
     [[nodiscard]] b2Rot rotation() const noexcept {
         return b2Body_GetRotation(body_descriptor_.bodyId);
     }
+    [[nodiscard]] b2BodyId bodyId() const noexcept { return body_descriptor_.bodyId; }
     [[nodiscard]] float mass() const { return b2Body_GetMass(body_descriptor_.bodyId); }
     [[nodiscard]] float length() const noexcept { return length_; }
     [[nodiscard]] float width() const noexcept { return width_; }
     [[nodiscard]] bool isStarted() const noexcept { return started_; }
     [[nodiscard]] b2AABB bbox() const noexcept { return b2Body_ComputeAABB(body_descriptor_.bodyId); }
     [[nodiscard]] const b2BodyDef& initialBodyDef() const noexcept { return body_descriptor_.body_def; }
+    [[nodiscard]] b2BodyType bodyType() const noexcept { return body_descriptor_.body_def.type; }
     /**
      * @brief Allows the object to be started updating its position continuously.
      */
@@ -166,7 +179,7 @@ public:
 
     /**
      * @brief BGR color used when rendering dynamic overlays.
-     * @return {B, G, R}. Default is a neutral gray; derived types may override.
+     * @return {B, G, R}. Gets color from the global cell_colors map based on cellType().
      */
     [[nodiscard]] virtual std::array<std::uint8_t, 3> colorBGR() const;
 

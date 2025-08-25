@@ -76,6 +76,8 @@ add_executable(vehicle_simulator.exe
         utils/utils.cpp
         utils/logging.cpp
         objects/Vehicle.cpp
+        objects/Grass.cpp
+        objects/Road.cpp
         objects/Obstacle.cpp
         objects/MapObject.cpp
         ${PROTO_SRCS}
@@ -114,6 +116,8 @@ add_library(testlib
         objects/sensors/Lidar2D.cpp
         objects/sensors/Sensor.cpp
         objects/Vehicle.cpp
+        objects/Grass.cpp
+        objects/Road.cpp
         objects/Obstacle.cpp
         utils/logging.cpp
         objects/MapObject.cpp
@@ -132,6 +136,7 @@ target_link_libraries(testlib PUBLIC
 add_executable(code_test
         tests/test_map2d.cpp
         tests/test_lidar2d.cpp
+        tests/test_vehicle.cpp
 )
 
 ## Add opencv debug flag

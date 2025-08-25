@@ -5,37 +5,24 @@
 #include <unordered_set>
 #include <opencv2/videoio.hpp>
 #include <opencv2/imgproc.hpp>
-#include "config/constants.h"
+#include "../data/constants.h"
 #include "../include/nlohmann/json.hpp"
 #include "../objects/MapObject.h"
 #include "map/Map2D.h"
 
 using json = nlohmann::json;
 namespace fs = std::filesystem;
-// resources. #TODO:
 fs::path cell_color_data_json = "/home/critter/workspace/autonomous_vehicle_simulator/res/maps/cell_colors.json";
-
-std::unordered_map<Cell, std::array<std::uint8_t, 3>> Map2D::cell_colors_;
 
 struct CellColorLoader {
     CellColorLoader() {
-        Map2D::loadCellColors(cell_color_data_json);
+        loadCellColors(cell_color_data_json);
     }
 };
 
 
-// this class was created only so that the cell colors are loaded
+// this class was created only so that the cell colors are loaded as soon as the program starts
 static CellColorLoader init_cell_colors;
-
-const std::unordered_map<Cell, std::array<std::uint8_t, 3>> default_cell_colors_ = {
-    {Cell::Unknown, {0, 0, 0}}, // black
-    {Cell::Free, {64,64,64}}, // dark gray
-    {Cell::Road, {128,128,128}}, // light gray
-    {Cell::Vehicle, {255,0,255}}, // pink
-    {Cell::Lidar, {0, 64, 128}}, // dark blue
-    {Cell::Obstacle, {0,255,0}}, // green
-    {Cell::Reserved, {255,192,255}} // light pink
-};
 
 Cell Map2D::atPx(int x, int y) const {
     if (x < 0 || x >= width_ || y < 0 || y >= height_) {
@@ -73,47 +60,7 @@ Map2D Map2D::window(int cx, int cy, int radius_px) const {
         for (int x = 0; x < w_window; ++x)
             local_map.setPx(x, y, atPx(start_x + x, start_y + y));
 
-    //TODO: rotate the local map to the vehicle's orientation. For that, find a way to sneak the car's
-    //TODO Pose2D (See the .proto file) into this method.
-
     return local_map;
-}
-
-Cell Map2D::colorToCell(std::array<unsigned char, 3> color) {
-    for (const auto& [cell, cell_color] : cell_colors_) {
-        if (color == cell_color) {
-            return cell;
-        }
-    }
-    throw std::invalid_argument("Color not found in cell colors map");
-}
-
-std::array<std::uint8_t, 3> Map2D::cellToColor(Cell cell) {
-    return cell_colors_.at(cell);
-}
-
-std::string Map2D::cellToString(Cell cell) {
-    switch (cell) {
-        case Cell::Unknown: return "Unknown";
-        case Cell::Free: return "Free";
-        case Cell::Road: return "Road";
-        case Cell::Vehicle: return "Vehicle";
-        case Cell::Lidar: return "Lidar";
-        case Cell::Obstacle: return "Obstacle";
-        case Cell::Reserved: return "Reserved";
-        default: throw std::invalid_argument("Invalid cell type");
-    }
-}
-
-Cell Map2D::stringToCell(const std::string& cell_name) {
-    if (cell_name == "Unknown") return Cell::Unknown;
-    if (cell_name == "Free") return Cell::Free;
-    if (cell_name == "Road") return Cell::Road;
-    if (cell_name == "Vehicle") return Cell::Vehicle;
-    if (cell_name == "Lidar") return Cell::Lidar;
-    if (cell_name == "Obstacle") return Cell::Obstacle;
-    if (cell_name == "Reserved") return Cell::Reserved;
-    throw std::invalid_argument("Invalid cell name: " + cell_name);
 }
 
 std::vector<Cell> Map2D::bmpToCells(const std::vector<std::array<uint8_t, 3> > &bmp_matrix) {
@@ -136,26 +83,6 @@ void Map2D::fillMapWith(Cell cell) {
     for (int y = 0; y < height_; ++y)
         for (int x = 0; x < width_; ++x)
             setPx(x, y, cell);
-}
-
-void Map2D::loadCellColors(const std::filesystem::path &path) {
-    logger().info("Loading cell colors from file: {}", path.string());
-    std::ifstream file(path);
-    if (!file) {
-        std::string path_str = path.string();
-        logger().warn("Could not open cell colors file: {}. Using default colors.", path_str);
-        for (const auto& [cell, color] : default_cell_colors_) {
-            cell_colors_[cell] = color;
-        }
-        return;
-    }
-    json j;
-    file >> j;
-    for (auto& [cell_name, color_json] : j.items()) {
-        Cell cell = stringToCell(cell_name);
-        std::array<unsigned char, 3> color = color_json.get<std::array<unsigned char, 3>>();
-        cell_colors_[cell] = color;
-    }
 }
 
 Map2D::Map2D(int width, int height, double res_m) {
@@ -212,6 +139,10 @@ std::pair<int,int> Map2D::worldToCell(float world_x, float world_y) const
 void Map2D::addObject(MapObject& object)
 {
     objects_.push_back(&object);
+    if (object.bodyType() == b2_staticBody) {
+        stampObject(object);
+        return;
+    }
     object.setMap(this);  // set the map for the object
 }
 
@@ -232,11 +163,13 @@ void Map2D::startSimulation() {
         while (simulation_active_ && num_frames < max_frames_stored_)
             {
                 for (MapObject* obj : objects_) {
-                    if (obj->isStarted()) {
-                        obj->update();
-                    }
-                    else {
-                        obj->freeze();
+                    if (!objectIsRemoved_(obj)) {
+                        if (obj->isStarted()) {
+                            obj->update();
+                        }
+                        else {
+                            obj->freeze();
+                        }
                     }
                 }
                 b2World_Step(WORLD, constants::step_size, 4);
@@ -286,6 +219,7 @@ void Map2D::addMotionFrame()
 
     // 2) overlay each dynamic object's current polygon from Box2D
     for (const MapObject* obj : objects_) {
+        if (obj->bodyType() == b2_staticBody) continue; // skip static objects
         const auto corners = obj->worldBoxCorners();
 
         std::array<cv::Point, 4> poly{};
@@ -294,8 +228,8 @@ void Map2D::addMotionFrame()
             const int ix = std::lround(corners[i].x / resolution_);
             const int iy = std::lround(corners[i].y / resolution_);
 
-            poly[i].x = std::clamp(ix, 0, width_  - 1);
-            poly[i].y = std::clamp(iy, 0, height_ - 1);
+            poly[i].x = ix;
+            poly[i].y = iy;
         }
 
         const auto bgr = obj->colorBGR();
@@ -351,3 +285,76 @@ cv::Mat Map2D::renderToMat() const
     return cached_original_frame_.clone();
 }
 
+void Map2D::stampObject(const MapObject& object)
+{
+    // world -> pixel polygon
+    const auto corners = object.worldBoxCorners();
+    std::array<cv::Point,4> poly{};
+    for (size_t i = 0; i < 4; ++i) {
+        const int ix = std::lround(corners[i].x / resolution_);
+        const int iy = std::lround(corners[i].y / resolution_);
+        poly[i].x = ix;
+        poly[i].y = iy;
+    }
+
+    // draw into mask and write back to map_data_
+    cv::Mat mask(height_, width_, CV_8UC1, cv::Scalar(0));
+    cv::fillConvexPoly(mask, poly.data(), (int)poly.size(), cv::Scalar(255), cv::LINE_AA);
+
+    const Cell c = object.cellType();
+    for (int y = 0; y < height_; ++y) {
+        const uint8_t* row = mask.ptr<uint8_t>(y);
+        for (int x = 0; x < width_; ++x) {
+            if (row[x]) {
+                map_data_[idx(x,y)] = c; // write to base map
+            }
+        }
+    }
+    invalidateFrameCache(); // refresh cached original frame
+}
+
+bool Map2D::objectIsInMap_(const MapObject& obj) const
+{
+    const auto corners = obj.worldBoxCorners();
+    std::array<cv::Point,4> poly{};
+    for (size_t i = 0; i < 4; ++i) {
+        poly[i].x = std::lround(corners[i].x / resolution_);
+        poly[i].y = std::lround(corners[i].y / resolution_);
+    }
+
+    const cv::Rect frame(0, 0, width_, height_);
+    const cv::Rect bb   = cv::boundingRect(std::vector<cv::Point>(poly.begin(), poly.end()));
+    return ( (bb & frame).area() > 0 );
+}
+
+
+void Map2D::removeObject_(MapObject* obj)
+{
+    if (!obj) return;
+    std::erase(objects_, obj);
+    offmap_time_.erase(obj);
+
+    logger().info("Removed object {} from map and world after off-map TTL of {}.", static_cast<const void*>(obj), constants::max_offmap_time);
+}
+
+bool Map2D::objectIsRemoved_(MapObject* obj) {
+    if (objectIsInMap_(*obj)) {
+        offmap_time_.erase(obj);
+        return false;
+    }
+    auto now = std::chrono::steady_clock::now();
+    auto it = offmap_time_.find(obj);
+    if (it == offmap_time_.end()) {
+        offmap_time_.emplace(obj, now);
+        logger().debug("Object {} went off-map; starting TTL.",
+                       static_cast<const void*>(obj));
+        return false;
+    }
+    const float dt = std::chrono::duration_cast<std::chrono::duration<float>>(now - it->second).count();
+    if (dt >= constants::max_offmap_time) {
+        removeObject_(obj);
+        logger().info("Object {} removed after being off-map for {:.1f} seconds.", static_cast<const void*>(obj), dt);
+        return true;
+    }
+    return false;
+}

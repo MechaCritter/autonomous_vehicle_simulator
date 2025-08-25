@@ -3,7 +3,7 @@
 
 #include "MapObject.h"
 #include "../utils/logging.h"
-#include "../config/constants.h"
+#include "../data/constants.h"
 #include <array>
 #include <algorithm>
 #include <cmath>
@@ -151,6 +151,11 @@ private:
      *
      */
     void updateSensors_() const;
+    /**
+     * @brief Alters the linear damping of the car based on the cell
+     * it is currently on.
+     */
+    void updateFriction_() const;
 };
 
 #endif // VEHICLE_H

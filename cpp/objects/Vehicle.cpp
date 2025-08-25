@@ -1,6 +1,6 @@
 #include "../objects/Vehicle.h"
 #include "../objects/sensors/Sensor.h"
-#include "../config/constants.h"
+#include "../data/constants.h"
 #include <spdlog/spdlog.h>
 
 Vehicle::Vehicle(float length, float width,
@@ -11,7 +11,7 @@ Vehicle::Vehicle(float length, float width,
                  float init_y,
                  float motor_force)
     : MapObject(length, width, b2_dynamicBody, rotation, init_speed, init_x, init_y,
-        constants::vehicle_density, constants::vehicle_friction),
+        constants::vehicle_density, constants::vehicle_road_friction),
       color_bgr_(color_bgr)
 {
     max_motor_force_ = std::abs(mass() * constants::g);    // traction-limited
@@ -82,10 +82,22 @@ void Vehicle::update() {
     const b2Vec2 Fdrive = { motor_force_ * wheelDirWorld.x,
                             motor_force_ * wheelDirWorld.y };
     b2Body_ApplyForce(id, Fdrive, frontWorld, true);
-
-    // Keep sensors in sync with the current transform
+    updateFriction_();
+    // "teleport" the sensors to the new vehicle pose
     updateSensors_();
 }
+
+void Vehicle::updateFriction_() const {
+    if (map_) {
+        const b2BodyId id = body_descriptor_.bodyId;
+        const b2Vec2 pos = b2Body_GetPosition(id);
+        const auto [px, py] = map_->worldToCell(pos.x, pos.y);
+        const Cell ground = map_->atPx(px, py);
+        auto linDamp = friction_map[ground];
+        b2Body_SetLinearDamping(id,  linDamp);
+    }
+}
+
 
 
 void Vehicle::setMotorForce(float force)
@@ -98,3 +110,4 @@ void Vehicle::setMotorForce(float force)
         motor_force_ = force;
     }
 }
+

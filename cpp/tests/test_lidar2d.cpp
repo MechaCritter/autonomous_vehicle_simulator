@@ -5,7 +5,7 @@
 #include <include/spdlog/sinks/basic_file_sink.h>
 #include "../objects/sensors/Lidar2D.h"
 #include "../map/Map2D.h"
-#include "../data/classes.h"
+#include "../data/DataClasses.h"
 
 // global var
 std::shared_ptr<spdlog::logger> logger = spdlog::stdout_color_mt("Testing");

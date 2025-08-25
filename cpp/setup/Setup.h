@@ -1,6 +1,6 @@
 #pragma once
 #include <box2d/box2d.h>
-#include <../config/constants.h>
+#include <../data/constants.h>
 #include <cassert>
 
 inline b2WorldId WORLD;

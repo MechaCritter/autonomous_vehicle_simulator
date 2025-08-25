@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <box2d/box2d.h>
 
-#include "../data/classes.h"
+#include "../data/DataClasses.h"
 #include "../utils/utils.h"
 #include "../utils/logging.h"
 #include "../objects/MapObject.h"
@@ -99,8 +99,6 @@ public:
     [[nodiscard]] int width() const noexcept {return width_;}
     [[nodiscard]] int height() const noexcept {return height_;}
     [[nodiscard]] double resolution() const noexcept {return resolution_;}
-    [[nodiscard]] static const std::unordered_map<Cell, std::array<std::uint8_t, 3>>& cell_colors() noexcept
-                        {return cell_colors_;}
     [[nodiscard]] const std::vector<MapObject*>& objects() const noexcept { return objects_; }
     [[nodiscard]] int maxFrameStored() const noexcept { return max_frames_stored_; }
     [[nodiscard]] bool simulationActive() const noexcept { return simulation_active_; }
@@ -114,7 +112,7 @@ public:
      * @param color An array of 3 uint8_t values representing BGR color channels
      * @return Cell The corresponding Cell enum value for that color
      */
-    static Cell colorToCell(std::array<std::uint8_t, 3> color);
+    static Cell colorToCell(std::array<std::uint8_t, 3> color) { return ::colorToCell(color); }
 
     /**
      * @brief Converts a Cell type to its corresponding BGR color
@@ -122,7 +120,7 @@ public:
      * @param cell The Cell enum value to convert
      * @return std::array<std::uint8_t, 3> BGR color array corresponding to the cell type
      */
-    static std::array<std::uint8_t, 3> cellToColor(Cell cell);
+    static std::array<std::uint8_t, 3> cellToColor(Cell cell) { return ::cellToColor(cell); }
 
     /**
      * @brief Converts a Cell type to a string representation
@@ -130,7 +128,7 @@ public:
      * @param cell The Cell enum value to convert
      * @return std::string String representation of the cell type (e.g. "Unknown", "Free", etc.)
      */
-    static std::string cellToString(Cell cell);
+    static std::string cellToString(Cell cell) { return ::cellToString(cell); }
 
     /**
      * @brief Convers the string representation of a cell type to the corresponding Cell enum value.
@@ -138,7 +136,7 @@ public:
      * @param cell_name The string representation of the cell type (e.g. "Unknown", "Free", etc.)
      * @return Cell The corresponding Cell enum value
      */
-    static Cell stringToCell(const std::string& cell_name);;
+    static Cell stringToCell(const std::string& cell_name) { return ::stringToCell(cell_name); }
 
     /**
      * @brief Loads the cells colors from a json file.
@@ -152,7 +150,7 @@ public:
      *   "Reserved": [255, 0, 0]
      *   }
      */
-    static void loadCellColors(const std::filesystem::path &path);
+    static void loadCellColors(const std::filesystem::path &path) { ::loadCellColors(path); }
 
     /**
      * @brief Converts a BMP image matrix to a vector of Cell objects.
@@ -176,7 +174,8 @@ public:
     void fillMapWith(Cell cell);
 
     /**
-     * @brief Registers the Object on this map
+     * @brief Registers the Object on this map. If the object is
+     * static, it will be rasterized into the map data immediately.
      *
      * @param object object to be registered
      */
@@ -197,7 +196,10 @@ public:
 
     /**
      * @brief Capture a frame by drawing the static map, then overlaying
-     *        each object's polygon filled in its BGR color.
+     *        each dynamic object's polygon filled in its BGR color.
+     *
+     * @details this method only stamps the **dynamic objects** on top of a copy of
+     * the static map.
      * @details Does NOT mutate map_data_; it uses the physics state for positions.
      */
     void addMotionFrame();
@@ -231,14 +233,6 @@ public:
      */
     void addMotionFrame(const cv::Mat& frame);
 
-    // /**
-    //  *
-    //  * @param Rasterise a world-frame rectangle (vehicle) into occupied cells.
-    //  *
-    //  * @param vehicle The vehicle to stamp on the map
-    //  */
-    // void stampVehicle(const Vehicle& vehicle);
-
     /**
      *
      * @brief Returns the pixel coordinates based on the world coordinates.
@@ -266,13 +260,17 @@ private:
     std::vector<Cell> map_data_;
     std::vector<MapObject*> objects_;    ///< dynamic objects attached to this map
     bool obstacles_built_{false};
-    // A hash table that maps each cell type to its corresponding BGR color.
-    static std::unordered_map<Cell, std::array<std::uint8_t, 3>> cell_colors_;
 
     [[nodiscard]] static spdlog::logger& logger() {
         static std::shared_ptr<spdlog::logger> logger_ = utils::getLogger("Map2D");
         return *logger_;
     }
+
+    /**
+     * @brief tracks how long each object has been off-map. After MAX_OFFMAX_TIME seconds,
+     * the object will be destroyed and de-registered from the map.
+     */
+    std::unordered_map<MapObject*, std::chrono::steady_clock::time_point> offmap_time_;
     std::thread simulation_thread_;
     bool simulation_active_{false};
     std::vector<cv::Mat> capture_frames_;
@@ -287,6 +285,43 @@ private:
 
     /** Invalidate the cached frame (call when static map data changes) */
     void invalidateFrameCache() const;
+
+    /**
+     * @brief Rasterize a (convex) object polygon directly into map_data_ with its
+     * Cell type.
+     * @note Only use on static objects that do not move!!!
+     */
+    void stampObject(const MapObject& object);
+
+    /**
+     * @brief Remove object from this map and destroy its Box2D body
+     *
+     * @param obj The object to remove
+     */
+    void removeObject_(MapObject* obj);
+
+    /**
+     * @brief Return true if the object's polygon intersects the image
+     * frame.
+     *
+     * @param obj The object to check
+     */
+    bool objectIsInMap_(const MapObject& obj) const;
+
+    /**
+     * @brief Decide if a dynamic object must be removed at this tick and
+     * remove it according to the policy below.
+     *
+     * Policy:
+     * - If fully off-frame, start/continue TTL.
+     * - If off-frame duration >= OFFMAP_TTL_SECONDS, request removal.
+     * - If back on-frame, clear TTL.
+     *
+     * @param obj Dynamic object pointer (non-null for evaluation).
+     *
+     * @return true if the object has been removed
+     */
+    bool objectIsRemoved_(MapObject* obj);
 };
 
 /**

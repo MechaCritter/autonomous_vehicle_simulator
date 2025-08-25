@@ -1,4 +1,5 @@
 #include "../objects/MapObject.h"
+#include "../data/DataClasses.h"
 #include <cmath>
 
 void MapObject::printPhysicalProperties() const {
@@ -28,8 +29,8 @@ void MapObject::printPhysicalProperties() const {
 
 std::array<std::uint8_t, 3> MapObject::colorBGR() const
 {
-    // Neutral default; Vehicle overrides to its own color.
-    return { 200, 200, 200 };
+    // Get the color based on the object's cell type from the global cell_colors map
+    return cellToColor(cellType());
 }
 
 std::array<b2Vec2, 4> MapObject::worldBoxCorners() const noexcept

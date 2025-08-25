@@ -12,7 +12,7 @@
 #include <optional>
 #include <eigen3/Eigen/Dense>
 #include <box2d/box2d.h>
-#include "../data/classes.h"
+#include "../data/DataClasses.h"
 
 class MapObject;
 
