@@ -6,6 +6,7 @@
 #define MAPOBJECT_H
 
 #include "data/DataClasses.h"
+#include <../data/constants.h>
 #include <../setup/Setup.h>
 #include <include/spdlog/spdlog.h>
 #include <include/spdlog/sinks/stdout_color_sinks.h>
@@ -50,7 +51,6 @@ struct BodyDescriptor {
         body_def.type = body_type;
         body_def.position = {init_x, init_y};
         body_def.rotation = b2MakeRot(rotation);
-        initVelocity(init_velocity, rotation);
         shape_def.density = density;
         shape_def.material.friction = friction;
         shape_def.material.restitution = 1.0f; // perfectly elastic
@@ -60,6 +60,7 @@ struct BodyDescriptor {
         bodyId = b2CreateBody(WORLD, &body_def);
         shapeId = b2CreatePolygonShape(bodyId, &shape_def, &bbox);
         b2Body_ApplyMassFromShapes(bodyId);
+        initVelocity(init_velocity, rotation);
         b2Body_SetAngularDamping(bodyId, constants::angular_damping);
     }
     /* Initialize the linear velocity based on speed and angle. */
@@ -123,6 +124,7 @@ public:
     [[nodiscard]] b2AABB bbox() const noexcept { return b2Body_ComputeAABB(body_descriptor_.bodyId); }
     [[nodiscard]] const b2BodyDef& initialBodyDef() const noexcept { return body_descriptor_.body_def; }
     [[nodiscard]] b2BodyType bodyType() const noexcept { return body_descriptor_.body_def.type; }
+
     /**
      * @brief Allows the object to be started updating its position continuously.
      */

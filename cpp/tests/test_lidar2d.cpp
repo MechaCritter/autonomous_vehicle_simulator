@@ -111,7 +111,8 @@ TEST_P(LidarParamTest, GenerateData)
                   P.res, P.map_width, P.map_height, P.obs_x, P.obs_y, P.px, P.py, static_cast<int>(P.obstacle_cls), P.test_id);
     logger->info("Output debug path: {}", output_debug_path.string());
     setupWorld();
-    Map2D map(P.map_width, P.map_height, P.res, Cell::Free);
+    Map2D map(P.map_width, P.map_height);
+    map.setResolution(P.res);
     map.setPx(P.obs_x, P.obs_y, P.obstacle_cls);
 
     // tolerance = half the resolution + a tolerance of 1e-3

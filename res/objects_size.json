@@ -1,0 +1,6 @@
+{
+  "Vehicle":  { "length": 2.5, "width": 1.5, "motor_force": 15000 },
+  "Obstacle": { "length": 5.0, "width": 5.0 },
+  "Grass":    { "length": 5.0, "width": 5.0 },
+  "Road":     { "length": 5.0, "width": 5.0 }
+}

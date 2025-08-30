@@ -18,19 +18,23 @@ Vehicle::Vehicle(float length, float width,
     setMotorForce(motor_force); // initial motor force
 }
 
-void Vehicle::addSensor(Sensor* s, MountSide side, float offset)
+Vehicle::~Vehicle() = default;
+
+void Vehicle::addSensor(std::unique_ptr<Sensor> s, MountSide side, float offset)
 {
-    mounts_.push_back({s, side, offset});
-    // // Add sensor mass to vehicle's total mass
-    // body_descriptor_.mass += s->mass();
+    Sensor* sensor_ptr = s.get();
+    sensors_.push_back(std::move(s)); // transfers ownership to vehicle
+    mounts_.push_back({sensor_ptr, side, offset}); // non-owning view used for pose updates
     updateSensors_();   // place immediately
 }
 
 void Vehicle::setMap(Map2D *map) {
     MapObject::setMap(map);
-    for (auto& m : mounts_) {
-        map->addObject(*m.sensor); // register sensor on the map
+    for (auto& sensor : sensors_) {
+        map->addObject(std::move(sensor)); // register sensor on the map
     }
+    // owns none after adding to map
+    sensors_.clear();
     updateSensors_(); // place sensors immediately
 }
 

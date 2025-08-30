@@ -50,18 +50,32 @@ struct SimulationTestParams {
 };
 
 TEST(Map2D, Access) {
-    Map2D m(10,10,0.1, Cell::Free);
+    Map2D m(10,10);
     m.setPx(3,3, Cell::Road);
     EXPECT_EQ(m.atPx(3,3), Cell::Road);
 }
 
 TEST(Map2D, Window) {
-    Map2D g(20,20,0.1, Cell::Free);
+    Map2D g(20,20);
     g.setPx(5,5, Cell::Obstacle);
     Map2D w = g.window(5,5,3);
     EXPECT_EQ(w.width(), 6);
     EXPECT_EQ(w.height(),6);
     EXPECT_EQ(w.atPx(3,3), Cell::Obstacle); // the central cell of the window should be the obstacle
+}
+
+TEST(Map2D, DefaultMap) {
+    setupWorld();
+    Map2D map = Map2D::loadMap(DEFAULT_MAP_FILE, DEFAULT_METADATA_FILE);
+    map.startAllObjects();
+    map.startSimulation();
+    std::this_thread::sleep_for(std::chrono::seconds(10));
+    map.endSimulation();
+    std::filesystem::path videoFile = output_debug_path_testmap2d / "test_default_map.mp4";
+    map.flushFrames(videoFile.string());
+    ASSERT_TRUE(std::filesystem::exists(videoFile));
+    EXPECT_GT(std::filesystem::file_size(videoFile), 0);
+    destroyWorld();
 }
 
 // Parametrized test class
@@ -70,10 +84,6 @@ protected:
     void SetUp() override {
         setupWorld();
     }
-
-    void TearDown() override {
-        destroyWorld();
-    }
 };
 
 TEST_P(Map2DSimulationTest, SimulationScenarios) {
@@ -81,10 +91,9 @@ TEST_P(Map2DSimulationTest, SimulationScenarios) {
     testLogger->info("Running simulation test: {}", params.test_name);
 
     // Load default map
-    Map2D map = Map2D::loadMap(DEFAULT_MAP_FILE, DEFAULT_MAP_RESOLUTION);
+    Map2D map(500, 500);
 
     // Create and add vehicles
-    std::vector<std::unique_ptr<Vehicle>> vehicles;
     for (size_t i = 0; i < params.vehicles.size(); ++i) {
         const auto& config = params.vehicles[i];
         auto vehicle = std::make_unique<Vehicle>(
@@ -99,20 +108,16 @@ TEST_P(Map2DSimulationTest, SimulationScenarios) {
         testLogger->info("Vehicle {} has motor force {:.2f} N and speed {:.2f} m/s",
                         i + 1, vehicle->motorForce(), vehicle->speed());
 
-        map.addObject(*vehicle);
-        vehicles.push_back(std::move(vehicle));
+        map.addObject(std::move(vehicle));
     }
 
     // Create and add obstacles
-    std::vector<std::unique_ptr<Obstacle>> obstacles;
     for (size_t i = 0; i < params.obstacles.size(); ++i) {
         const auto& config = params.obstacles[i];
         auto obstacle = std::make_unique<Obstacle>(
             config.length, config.width, config.init_x, config.init_y, config.rotation
         );
-
-        map.addObject(*obstacle);
-        obstacles.push_back(std::move(obstacle));
+        map.addObject(std::move(obstacle));
     }
 
     // Start simulation
@@ -190,4 +195,3 @@ INSTANTIATE_TEST_SUITE_P(
         }
     )
 );
-

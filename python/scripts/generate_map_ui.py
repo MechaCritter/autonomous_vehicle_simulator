@@ -1,285 +1,200 @@
-"""Simple PyQt6 image annotation tool with adjustable brush size and smoothing.
+import json
+from PyQt6.QtCore import Qt, QRectF
+from PyQt6.QtGui import QBrush, QPen, QPainter, QColor, QImage
+from PyQt6.QtWidgets import QApplication, QGraphicsScene, QGraphicsView, QGraphicsRectItem
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QInputDialog, QFileDialog
 
-This module provides a tiny raster editor to quickly label grid-based maps,
-for example cost maps used in path‑planning demos.
+from python import config
 
-New in this version
--------------------
-* Adjustable brush size via a QSpinBox (1‑50 px).
-* “Smooth” button that removes tiny colour speckles using connected‑component
-  analysis.
-
-Requires
---------
-* Python ≥ 3.9
-* PyQt6
-"""
-
-from __future__ import annotations
-
-import sys
-from collections import deque
-from functools import partial
-
-from PyQt6.QtCore import Qt, QPoint
-from PyQt6.QtGui import QImage, QPainter, QColor
-from PyQt6.QtWidgets import (
-    QApplication,
-    QFileDialog,
-    QWidget,
-    QPushButton,
-    QVBoxLayout,
-    QHBoxLayout,
-    QSpinBox,
-    QLabel,
-)
-
-from config import ROOT
-
-# Global var
-DEFAULT_SAVE_DIR = ROOT / "res" / "maps"
-
-# Colour lookup table (index → QColor). Color scheme: RGB
-# NOTE: use symmetric colors to avoid confusion between BGR abd RBG across different libraries
-CELL_COLOURS: dict[str, QColor] = {
-    "Unknown": QColor(0, 0, 0),
-    "Free": QColor(64, 64, 64),
-    "Road": QColor(128, 128, 128),
-    "Vehicle": QColor(255, 0, 255),
-    "Obstacle": QColor(0, 255, 0),
-    "Reserved": QColor(255, 192, 255)
-}
-
-
-class Canvas(QWidget):
-    """Widget that implements a very small raster‑based paint surface."""
-
-    def __init__(self, width: int = 500, height: int = 500) -> None:
-        """
-        :param width:  Width of the canvas in pixels.
-        :param height: Height of the canvas in pixels.
-        """
+class MapEditor(QWidget):
+    def __init__(self):
         super().__init__()
-        self.img = QImage(width, height, QImage.Format.Format_RGB888)
-        self.img.fill(CELL_COLOURS["Unknown"])
-        self.current_color = "Unknown"  # currently selected colour (index into CELL_COLOURS)
-        self.brush_size = 20 # default brush size in pixels
-        self.setFixedSize(width, height)
+        # Prompt user fors map dimensions (in pixels)
+        width, ok = QInputDialog.getInt(self, "Map Width", "Enter map width (pixels):", 500, config.MIN_MAP_SIZE, config.MAX_MAP_SIZE)
+        if not ok: width = config.MIN_MAP_SIZE
+        height, ok = QInputDialog.getInt(self, "Map Height", "Enter map height (pixels):", config.MIN_MAP_SIZE, 1, config.MAX_MAP_SIZE)
+        if not ok: height = config.MIN_MAP_SIZE
+        self.map_width = width
+        self.map_height = height
+        self.object_sizes: dict = {}
+        self.cell_colors: dict = {}
 
-    # ---------------------------------------------------------------- events
-    def mouseMoveEvent(self, event) -> None:  # noqa: N802 (PyQt naming)
-        """Paint while the left mouse button is held down."""
-        if event.buttons() & Qt.MouseButton.LeftButton:
-            pos = QPoint(event.position().toPoint())
-            self._paint_at(pos)
+        with open(config.COLOR_JSON) as f:
+            color_data = json.load(f)
+            self.cell_colors = {name: QColor(*rgb) for name, rgb in color_data.items()}
 
-    def mousePressEvent(self, event) -> None:  # noqa: N802 (PyQt naming)
-        """Start painting on left button press."""
+        # Convert color lists to QColor (assuming [R,G,B] format in JSON)
+
+
+        # Load object sizes (meters) from config and compute pixel sizes
+        with open(config.OBJECTS_SIZE_JSON) as f:
+            self.object_sizes = json.load(f)
+
+        self.resolution = 0.1  # meters per pixel (default)
+        for t, vals in self.object_sizes.items():
+            vals["length_px"] = int(vals["length"] / self.resolution)
+            vals["width_px"]  = int(vals["width"]  / self.resolution)
+
+        # Set up the graphics scene and view
+        self.scene = QGraphicsScene(0, 0, width, height)
+        self.scene.setSceneRect(0, 0, width, height)
+        self.view = MapView(self.scene, self)
+        self.view.setBackgroundBrush(QBrush(self.cell_colors["Unknown"]))  # Unknown background
+        self.view.setFixedSize(width, height)
+        self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        # Layout and controls
+        self.current_type = "Obstacle"
+        btn_layout = QHBoxLayout()
+        for obs, col in self.cell_colors.items():
+            if obs in self.object_sizes and obs not in ('Unknown', 'Free'):
+                btn = QPushButton(obs)
+                btn.setStyleSheet(f"background-color: {col.name()}")
+                btn.clicked.connect(lambda _, typ=obs: self.set_current_type(typ))
+                btn_layout.addWidget(btn)
+        save_btn = QPushButton("Save Map")
+        save_btn.clicked.connect(self.save_map)
+        btn_layout.addWidget(save_btn)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.view)
+        layout.addLayout(btn_layout)
+        self.setWindowTitle("Map Editor")
+
+    def set_current_type(self, typ: str):
+        """Change the type of object to place next."""
+        self.current_type = typ
+
+    def add_object_at(self, x: float, y: float):
+        """Place a new object of current_type centered at scene coordinates (x, y)."""
+        t = self.current_type
+        # Determine object dimensions in pixels
+        length_px = self.object_sizes[t]["length_px"]
+        width_px  = self.object_sizes[t]["width_px"]
+        half_len = length_px / 2.0
+        half_wid = width_px / 2.0
+        # Clamp position so object stays fully within bounds
+        if x - half_len < 0:           x = half_len
+        if y - half_wid < 0:           y = half_wid
+        if x + half_len > self.map_width:   x = self.map_width - half_len
+        if y + half_wid > self.map_height:  y = self.map_height - half_wid
+        # Create a rectangle item for the object
+        rect = QGraphicsRectItem(-half_len, -half_wid, length_px, width_px)
+        rect.setTransformOriginPoint(0, 0)
+        rect.setBrush(QBrush(self.cell_colors[t]))
+        # rect.setPen(QPen(Qt.GlobalColor.white, 1, Qt.PenStyle.DotLine) if t == "Vehicle" else QPen(Qt.GlobalColor.white, 0))
+        rect.setPen(QPen(Qt.GlobalColor.white, 1, Qt.PenStyle.DotLine) if t == "Vehicle" else QPen(Qt.PenStyle.NoPen))
+        rect.setFlags(QGraphicsRectItem.GraphicsItemFlag.ItemIsMovable |
+                      QGraphicsRectItem.GraphicsItemFlag.ItemIsSelectable |
+                      QGraphicsRectItem.GraphicsItemFlag.ItemIsFocusable)
+        rect.setData(0, t)             # store object type
+        rect.setRotation(0.0)          # default orientation
+        rect.setPos(x, y)
+        self.scene.addItem(rect)
+        # Remove any object that overlaps the new one (overwrite spot)
+        for item in rect.collidingItems():
+            if item.data(0) is not None:
+                self.scene.removeItem(item)
+
+    def save_map(self):
+        """Save the map image and metadata to files."""
+        # Prompt for save location
+        filename, _ = QFileDialog.getSaveFileName(self, "Save Map As", "map.bmp", "Bitmap (*.bmp)")
+        if not filename:
+            return
+        if not filename.lower().endswith(".bmp"):
+            filename += ".bmp"
+        # Render the scene (background + objects) to an image
+        image = QImage(self.map_width, self.map_height, QImage.Format.Format_RGB888)
+        image.fill(self.cell_colors["Unknown"])  # fill background with Unknown color
+        painter = QPainter(image)
+        self.scene.render(painter, QRectF(0, 0, self.map_width, self.map_height))
+        painter.end()
+        image.save(filename, "BMP")
+        # Prepare metadata about objects
+        objects_list = []
+        for item in self.scene.items():
+            obj_type = item.data(0)
+            if obj_type is None:
+                continue  # skip any auxiliary items
+            cx, cy   = item.x(), item.y()
+            angle    = item.rotation()
+            objects_list.append({
+                "type": obj_type,
+                "x": int(round(cx)),   # center position (pixels)
+                "y": int(round(cy)),
+                "rotation": angle      # rotation in degrees
+            })
+        meta = { "objects": objects_list }
+        meta_file = filename.rsplit('.', 1)[0] + ".json"
+        with open(meta_file, 'w') as jf:
+            json.dump(meta, jf, indent=4)
+        print(f"Saved map image to {filename} and metadata to {meta_file}")
+
+    def keyPressEvent(self, event):
+        """Intercept Delete and Arrow keys for object manipulation."""
+        if event.key() == Qt.Key.Key_Delete:
+            # Delete all selected items
+            for item in self.scene.selectedItems():
+                self.scene.removeItem(item)
+        elif event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            # Rotate selected items by ±22.5 degrees
+            for item in self.scene.selectedItems():
+                current_angle = item.rotation()
+                delta = -22.5 if event.key() == Qt.Key.Key_Left else 22.5
+                item.setRotation(current_angle + delta)
+
+class MapView(QGraphicsView):
+    """GraphicsView that places new objects on left-click and handles rotation."""
+    def __init__(self, scene: QGraphicsScene, editor: MapEditor):
+        super().__init__(scene)
+        self.editor = editor
+        self.setRenderHint(QPainter.RenderHint.Antialiasing)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # <- important: accept key events
+
+    def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            self._paint_at(QPoint(event.position().toPoint()))
+            pos = self.mapToScene(event.position().toPoint())
+            if self.scene().itemAt(pos, self.transform()) is None:
+                self.editor.add_object_at(pos.x(), pos.y())
+        super().mousePressEvent(event)
 
-    # --------------------------------------------------------------- helpers
-    @property
-    def colour(self) -> QColor:
-        """Currently selected brush colour."""
-        return CELL_COLOURS[self.current_color]
+    def keyPressEvent(self, event):
+        """Rotate/delete selected items. Shift = fine rotation (1°)."""
+        key = event.key()
+        if key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            items = self.scene().selectedItems()
+            if items:
+                step = 1.0 if (event.modifiers() & Qt.KeyboardModifier.ShiftModifier) else 22.5
+                delta = -step if key == Qt.Key.Key_Left else step
+                for it in items:
+                    it.setRotation(it.rotation() + delta)
+                event.accept()
+                return
+        elif key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            for it in self.scene().selectedItems():
+                self.scene().removeItem(it)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
-    def set_brush_size(self, size: int) -> None:
-        """
-        Update brush size used when painting.
+    def wheelEvent(self, event):
+        """Ctrl + wheel to rotate selected items by 5° per notch; wheel alone behaves normally."""
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            items = self.scene().selectedItems()
+            if items:
+                # angleDelta().y() > 0 -> wheel up; < 0 -> wheel down
+                sign = 1 if event.angleDelta().y() > 0 else -1
+                for it in items:
+                    it.setRotation(it.rotation() + 5.0 * sign)
+                event.accept()
+                return
+        super().wheelEvent(event)
 
-        :param size: New brush size in pixels.
-        :returns: None
-        """
-        self.brush_size = max(1, size)
-
-    def _paint_at(self, p: QPoint) -> None:
-        """
-        Paint a filled rectangle at the given position.
-
-        :param p: QPoint (canvas‑local coordinates) where the user painted.
-        :returns: None
-        """
-        if 0 <= p.x() < self.img.width() and 0 <= p.y() < self.img.height():
-            painter = QPainter(self.img)
-            painter.setPen(self.colour)
-            painter.setBrush(self.colour)
-            painter.drawRect(
-                p.x() - self.brush_size // 2,
-                p.y() - self.brush_size // 2,
-                self.brush_size,
-                self.brush_size,
-            )
-            painter.end()
-            self.update()
-
-    # -------------------------------------------------------- smoothing algo
-    def smooth(self, min_size: int = 20) -> None:
-        """
-        Remove tiny speckles by merging components smaller than *min_size*.
-
-        A 4‑neighbourhood flood‑fill is used to label connected components.
-        Components with fewer than *min_size* pixels are recoloured to the
-        colour of the nearest large neighbour.
-
-        :param min_size: Minimum pixel count a component must have to be kept.
-        :returns: None
-        """
-        width, height = self.img.width(), self.img.height()
-        comp_map = [[-1] * width for _ in range(height)]
-        comp_sizes: list[int] = []
-        comp_colours: list[QColor] = []
-
-        def neighbours(x: int, y: int):
-            """Yield 4‑neighbour coordinates within bounds."""
-            if x > 0:
-                yield x - 1, y
-            if x + 1 < width:
-                yield x + 1, y
-            if y > 0:
-                yield x, y - 1
-            if y + 1 < height:
-                yield x, y + 1
-
-        # ---- first pass: label components and measure their sizes ----------
-        comp_id = 0
-        for y in range(height):
-            for x in range(width):
-                if comp_map[y][x] >= 0:
-                    continue  # already visited
-
-                target_colour = self.img.pixelColor(x, y)
-                queue = deque([(x, y)])
-                comp_map[y][x] = comp_id
-                size = 0
-
-                while queue:
-                    cx, cy = queue.popleft()
-                    size += 1
-                    for nx, ny in neighbours(cx, cy):
-                        if comp_map[ny][nx] == -1 and self.img.pixelColor(
-                            nx, ny
-                        ) == target_colour:
-                            comp_map[ny][nx] = comp_id
-                            queue.append((nx, ny))
-
-                comp_sizes.append(size)
-                comp_colours.append(target_colour)
-                comp_id += 1
-
-        # ---- second pass: recolour small components ------------------------
-        for y in range(height):
-            for x in range(width):
-                cid = comp_map[y][x]
-                if comp_sizes[cid] >= min_size:
-                    continue  # large enough
-
-                # find colour of the nearest large neighbour
-                replacement: QColor | None = None
-                for nx, ny in neighbours(x, y):
-                    nid = comp_map[ny][nx]
-                    if comp_sizes[nid] >= min_size:
-                        replacement = comp_colours[nid]
-                        break
-
-                if replacement is None:
-                    replacement = comp_colours[cid]  # fallback
-
-                self.img.setPixelColor(x, y, replacement)
-
-        self.update()
-
-    # ---------------------------------------------------------------- widget
-    def paintEvent(self, _) -> None:  # noqa: N802 (PyQt naming)
-        qp = QPainter(self)
-        qp.drawImage(0, 0, self.img)
-
-
-class Editor(QWidget):
-    """Main window that hosts the canvas and the control widgets."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.canvas = Canvas()
-
-        # ----------------------- save button
-        self.save_btn = QPushButton("Save BMP")
-        self.save_btn.clicked.connect(self._save)
-
-        # ----------------------- smooth button
-        self.smooth_btn = QPushButton("Smooth")
-        self.smooth_btn.clicked.connect(self.canvas.smooth)
-
-        # ----------------------- brush size control
-        self.brush_spin = QSpinBox()
-        self.brush_spin.setRange(1, 100)
-        self.brush_spin.setValue(self.canvas.brush_size)
-        self.brush_spin.setSuffix(" px")
-        self.brush_spin.valueChanged.connect(self.canvas.set_brush_size)
-
-        # ----------------------- palette buttons
-        self.palette_btns = [QPushButton(str(i)) for i in range(len(CELL_COLOURS))]
-        for btn, color in zip(self.palette_btns, CELL_COLOURS):
-            btn.setStyleSheet(f"background:{CELL_COLOURS[color].name()}")
-            btn.setText(color)
-            btn.clicked.connect(partial(self._set_colour, color))
-
-        # ----------------------- layouts
-        root = QVBoxLayout(self)
-        root.addWidget(self.canvas)
-
-        controls = QHBoxLayout()
-        root.addLayout(controls)
-
-        # colour palette
-        for btn in self.palette_btns:
-            controls.addWidget(btn)
-
-        # brush size + label
-        controls.addWidget(QLabel("Brush:"))
-        controls.addWidget(self.brush_spin)
-
-        # smooth + save
-        controls.addWidget(self.smooth_btn)
-        controls.addWidget(self.save_btn)
-
-        self.setWindowTitle("Grid Editor")
-
-    def _set_colour(self, color: str) -> None:
-        """
-        Select colour *idx* for subsequent painting.
-
-        :param color: Colour name
-        """
-        self.canvas.current_color = color
-
-    def _save(self) -> None:
-        """
-        Open a file‑save dialog and write the current canvas as a BMP file.
-
-        :returns: None
-        :raises ValueError: If file extension is invalid
-        """
-        name, _ = QFileDialog.getSaveFileName(
-            self, "Save as BMP", str(DEFAULT_SAVE_DIR / "default_map.bmp"), "Bitmap (*.bmp)"
-        )
-        if name:
-            if not name.lower().endswith('.bmp'):
-                if '.' in name:
-                    raise ValueError("Only .bmp extension is supported")
-                name = name + ".bmp"
-
-            if not self.canvas.img.save(name, "BMP"):
-                print(f"Could not save image to {name}", file=sys.stderr)
-
-
-def main() -> None:
-    """Entry‑point helper so running the module works as a script."""
-    app = QApplication(sys.argv)
-    Editor().show()
-    sys.exit(app.exec())
-
-
+# Run the application (if using as a script)
 if __name__ == "__main__":
-    main()
-
+    app = QApplication([])
+    editor = MapEditor()
+    editor.show()
+    app.exec()

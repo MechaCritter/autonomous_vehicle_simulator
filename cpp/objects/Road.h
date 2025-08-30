@@ -12,8 +12,9 @@ public:
     Road(float length, float width, float x, float y, float rotation = 0.0f)
         : MapObject(length, width, b2_staticBody, rotation, 0.0f, x, y, 0.0f, constants::vehicle_road_friction) // density ignored for static
     {
-        // Make shape a sensor => no collision response
-        body_descriptor_.shape_def.isSensor = true;
+        b2Filter filter = b2DefaultFilter();
+        filter.maskBits = 0; // Don't collide with anything
+        b2Shape_SetFilter(body_descriptor_.shapeId, filter);
     }
 
     [[nodiscard]] Cell cellType() const noexcept override { return Cell::Road; }

@@ -1,12 +1,13 @@
 #pragma once
 #include <box2d/box2d.h>
-#include <../data/constants.h>
 #include <cassert>
 
 inline b2WorldId WORLD;
 
 /**
  * Create the Box2D world once. If the world already exists, do nothing.
+ *
+ * The world has zero gravity (top-down view).
  */
 inline void setupWorld()
 {

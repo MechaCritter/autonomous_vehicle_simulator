@@ -8,12 +8,13 @@
 #include <algorithm>
 #include <cmath>
 #include <vector>
+#include <memory>
 #include <box2d/box2d.h>
 
 
 // forward declarations, otherwise circular dependency with Sensor.h
-class Map2D;
 class Sensor;
+class Map2D;
 
 class Vehicle final : public MapObject {
 public:
@@ -35,6 +36,8 @@ public:
             float init_x = 0.0f,
             float init_y = 0.0f,
             float motor_force = 0.0f);
+
+    ~Vehicle() override; // reimplemented the destructor here to avoid a weird error with unique pointer (i still have no idea why)
 
     // Getters
     [[nodiscard]] std::array<uint8_t,3> color() const { return color_bgr_; }
@@ -114,10 +117,13 @@ public:
      * @param side Side of the vehicle where the sensor is mounted (Front/Back/Left/Right).
      * @param offset Lateral (Left/Right) or longitudinal (Front/Back) shift from the center [m].
      */
-    void addSensor(Sensor* s, MountSide side, float offset = 0.0f);
+    void addSensor(std::unique_ptr<Sensor> s, MountSide side, float offset = 0.0f);
 
     /**
      * @brief  Register the vehicle as well as its sensors on the map.
+     *
+     * @note this method will transfer ownership of the sensors to the map. The
+     * vehicle then only keeps a non-owning view of the sensors for pose updates.
      *
      * @param map Pointer to the Map2D object where the vehicle is placed.
      */
@@ -134,10 +140,11 @@ protected:
 
 private:
     struct Mount {
-        Sensor*      sensor;
-        MountSide    side;
-        float        offset;   ///< lateral (Left/Right) or longitudinal (Front/Back) shift [m]
+        Sensor* sensor;
+        MountSide side;
+        float offset;   ///< lateral (Left/Right) or longitudinal (Front/Back) shift [m]
     };
+    std::vector<std::unique_ptr<Sensor>> sensors_;
     std::array<uint8_t,3> color_bgr_;   ///< BGR
     float motor_force_{0.0f};           ///< N
     float max_motor_force_{0.0f};       ///< N, computed as mass * g

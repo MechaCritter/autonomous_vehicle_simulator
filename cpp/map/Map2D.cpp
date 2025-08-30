@@ -8,11 +8,17 @@
 #include "../data/constants.h"
 #include "../include/nlohmann/json.hpp"
 #include "../objects/MapObject.h"
+#include "../objects/Vehicle.h"
+#include "../objects/Road.h"
+#include "../objects/Grass.h"
+#include "../objects/Obstacle.h"
+#include "../objects/Free.h"
 #include "map/Map2D.h"
 
 using json = nlohmann::json;
 namespace fs = std::filesystem;
 fs::path cell_color_data_json = "/home/critter/workspace/autonomous_vehicle_simulator/res/maps/cell_colors.json";
+fs::path size_cfg_path = "/home/critter/workspace/autonomous_vehicle_simulator/res/objects_size.json";
 
 struct CellColorLoader {
     CellColorLoader() {
@@ -53,7 +59,7 @@ Map2D Map2D::window(int cx, int cy, int radius_px) const {
     const int end_y = std::min(height_, cy + radius_px);
     const int w_window = end_x - start_x;
     const int h_window = end_y - start_y;
-    Map2D local_map =  Map2D(w_window, h_window, resolution_);
+    Map2D local_map =  Map2D(w_window, h_window);
 
     // Set the cell values to the values of the global map
     for (int y = 0; y < h_window; ++y)
@@ -85,41 +91,91 @@ void Map2D::fillMapWith(Cell cell) {
             setPx(x, y, cell);
 }
 
-Map2D::Map2D(int width, int height, double res_m) {
+Map2D::Map2D(int width, int height) {
     if (width > MAX_MAP_WIDTH || height > MAX_MAP_HEIGHT) {
         throw std::out_of_range(std::format(
         "Map size exceeds maximum dimensions. Max width: {}, max height: {}", MAX_MAP_WIDTH, MAX_MAP_HEIGHT));
     }
     width_ = width;
     height_ = height;
-    resolution_ = res_m;
-    //map_ = load_default_map(DEFAULT_MAP_FILE);
     map_data_.resize(width * height);
     objects_.clear();
     frame_cache_valid_ = false;
+
+    // Create a giant Free object that fills the entire map
+    float map_width_meters = width * resolution_;
+    float map_height_meters = height * resolution_;
+    background_free_object_ = std::make_unique<Free>(map_width_meters, map_height_meters,
+                                       map_width_meters/2, map_height_meters/2, 0.0f);
+    // Create a copy for the objects vector
+    addObject(std::move(background_free_object_));
 }
 
-Map2D::Map2D(int width, int height, double res_m, Cell default_value)
-    :Map2D(width, height, res_m)  // call the other constructor
-{
-    logger().info("Filling map with default value: {}", cellToString(default_value));
-    fillMapWith(default_value);
-}
-
-Map2D Map2D::loadMap(const std::string &filename, double res_m) {
+Map2D Map2D::loadMap(const std::string &map_file,
+            const std::string& metadata_json_file) {
     int w, h;
-    std::vector<std::array<uint8_t, 3>> bmp = utils::loadBmp(filename, w, h);
-    std::vector<Cell> cells = bmpToCells(bmp);
-    logger().info("Loaded map from file: {}. Size: {}x{}", filename, w, h);
-    Map2D m(w, h, res_m);
-    for (int y = 0; y < h; ++y)
-        for (int x = 0; x < w; ++x)
-            m.setPx(x, y, cells[y * w + x]);
+    std::vector<std::array<uint8_t, 3>> bmp = utils::loadBmp(map_file, w, h);
+    logger().info("Loaded map from file: {}. Size: {}x{}", map_file, w, h);
+    Map2D m(w, h);
+    m.fillMapWith(Cell::Unknown);
+
+    fs::path imagePath(map_file);
+    std::ifstream metaFile(metadata_json_file);
+    if (!metaFile) {
+        logger().error("Metadata file not found at {}", metadata_json_file);
+        throw std::runtime_error("Missing metadata.json for map loading");
+    }
+    nlohmann::json meta;
+    metaFile >> meta;
+    std::ifstream cfgFile(size_cfg_path);
+    nlohmann::json sizeCfg;
+    if (!cfgFile) {
+        logger().error("Object sizes config not found at {}", size_cfg_path.string());
+        throw std::runtime_error("Missing objects_size.json for map loading");
+    }
+    cfgFile >> sizeCfg;
+    // Support both formats: metadata could be an array or under "objects"
+    const auto &objects = meta.contains("objects") ? meta["objects"] : meta;
+    for (const auto& obj : objects) {
+
+        std::string type = obj.at("type");
+        if (!sizeCfg.contains(type)) {
+            throw std::runtime_error("sizeCfg missing geometry for type: " + type);
+        }
+
+        int px = obj.at("x");
+        int py = obj.at("y");
+        float rot_deg = obj.at("rotation");
+        float L = sizeCfg.at(type).at("length");
+        float W = sizeCfg.at(type).at("width");
+        float rot_rad = rot_deg * M_PI / 180.0f;
+        float world_x = px * m.resolution_;
+        float world_y = py * m.resolution_;
+        std::unique_ptr<MapObject> mapobj = nullptr;
+
+        if (type == "Obstacle") {
+            mapobj = std::make_unique<Obstacle>(L, W, world_x, world_y, rot_rad);
+        } else if (type == "Grass") {
+            mapobj = std::make_unique<Grass>(L, W, world_x, world_y, rot_rad);
+        } else if (type == "Road") {
+            mapobj = std::make_unique<Road>(L, W, world_x, world_y, rot_rad);
+        } else if (type == "Vehicle") {
+            float motorForce = 0.0f;
+            if (sizeCfg["Vehicle"].contains("motor_force")) {
+                motorForce = sizeCfg["Vehicle"]["motor_force"];
+            }
+            std::array<uint8_t,3> color_bgr = cellToColor(Cell::Vehicle);
+            mapobj = std::make_unique<Vehicle>(L, W, color_bgr, rot_rad, 0.0f, world_x, world_y, motorForce);
+        }
+        if (mapobj) {
+            m.addObject(std::move(mapobj));
+        }
+    }
+    logger().info("Loaded {} objects from metadata {}", objects.size(), metadata_json_file);
     return m;
 }
-
 Map2D& globalMap() {
-    static Map2D map = Map2D::loadMap(DEFAULT_MAP_FILE, DEFAULT_MAP_RESOLUTION);
+    static Map2D map = Map2D::loadMap(DEFAULT_MAP_FILE, DEFAULT_METADATA_FILE);
     return map;
 }
 
@@ -136,14 +192,22 @@ std::pair<int,int> Map2D::worldToCell(float world_x, float world_y) const
          std::clamp(pixel_y, 0, height_ - 1) };
 }
 
-void Map2D::addObject(MapObject& object)
+void Map2D::addObject(std::unique_ptr<MapObject> object)
 {
-    objects_.push_back(&object);
-    if (object.bodyType() == b2_staticBody) {
+    if (object->bodyType() == b2_staticBody) {
         stampObject(object);
-        return;
     }
-    object.setMap(this);  // set the map for the object
+    object->setMap(this);  // set the map for the object
+    objects_.push_back(std::move(object));
+}
+
+void Map2D::startAllObjects() const {
+    logger().info("Starting all {} objects in the map", objects_.size());
+    for (const auto& obj : objects_) {
+        if (obj) {
+            obj->start();
+        }
+    }
 }
 
 void Map2D::startSimulation() {
@@ -162,8 +226,8 @@ void Map2D::startSimulation() {
         const auto period = std::chrono::duration<float>(constants::step_size);
         while (simulation_active_ && num_frames < max_frames_stored_)
             {
-                for (MapObject* obj : objects_) {
-                    if (!objectIsRemoved_(obj)) {
+                for (auto& obj : objects_) {
+                    if (!objectIsRemoved_(obj.get())) {
                         if (obj->isStarted()) {
                             obj->update();
                         }
@@ -218,7 +282,7 @@ void Map2D::addMotionFrame()
     cv::Mat frame = cached_original_frame_.clone();
 
     // 2) overlay each dynamic object's current polygon from Box2D
-    for (const MapObject* obj : objects_) {
+    for (const auto& obj : objects_) {
         if (obj->bodyType() == b2_staticBody) continue; // skip static objects
         const auto corners = obj->worldBoxCorners();
 
@@ -285,10 +349,10 @@ cv::Mat Map2D::renderToMat() const
     return cached_original_frame_.clone();
 }
 
-void Map2D::stampObject(const MapObject& object)
+void Map2D::stampObject(const std::unique_ptr<MapObject>& object)
 {
     // world -> pixel polygon
-    const auto corners = object.worldBoxCorners();
+    const auto corners = object->worldBoxCorners();
     std::array<cv::Point,4> poly{};
     for (size_t i = 0; i < 4; ++i) {
         const int ix = std::lround(corners[i].x / resolution_);
@@ -301,7 +365,7 @@ void Map2D::stampObject(const MapObject& object)
     cv::Mat mask(height_, width_, CV_8UC1, cv::Scalar(0));
     cv::fillConvexPoly(mask, poly.data(), (int)poly.size(), cv::Scalar(255), cv::LINE_AA);
 
-    const Cell c = object.cellType();
+    const Cell c = object->cellType();
     for (int y = 0; y < height_; ++y) {
         const uint8_t* row = mask.ptr<uint8_t>(y);
         for (int x = 0; x < width_; ++x) {
@@ -313,9 +377,9 @@ void Map2D::stampObject(const MapObject& object)
     invalidateFrameCache(); // refresh cached original frame
 }
 
-bool Map2D::objectIsInMap_(const MapObject& obj) const
+bool Map2D::objectIsInMap_( MapObject* obj) const
 {
-    const auto corners = obj.worldBoxCorners();
+    const auto corners = obj->worldBoxCorners();
     std::array<cv::Point,4> poly{};
     for (size_t i = 0; i < 4; ++i) {
         poly[i].x = std::lround(corners[i].x / resolution_);
@@ -327,18 +391,33 @@ bool Map2D::objectIsInMap_(const MapObject& obj) const
     return ( (bb & frame).area() > 0 );
 }
 
-
-void Map2D::removeObject_(MapObject* obj)
+void Map2D::removeObject_(std::unique_ptr<MapObject> obj)
 {
     if (!obj) return;
-    std::erase(objects_, obj);
-    offmap_time_.erase(obj);
 
-    logger().info("Removed object {} from map and world after off-map TTL of {}.", static_cast<const void*>(obj), constants::max_offmap_time);
+    if (obj.get() == background_free_object_.get()) {
+        logger().warn("Attempted to remove protected background Free object. Ignoring deletion request.");
+        return;
+    }
+
+    offmap_time_.erase(obj.get());
+
+    // Remove from objects_ vector onl if the object  can be found in vector objects_
+    auto it = std::ranges::find_if(objects_,
+                                   [&obj](const std::unique_ptr<MapObject>& ptr) {
+                                       return ptr.get() == obj.get();
+                                   });
+
+    if (it != objects_.end()) {
+        objects_.erase(it);
+    }
+
+    // obj will be automatically deleted when unique_ptr goes out of scope
+    logger().debug("Removed object {} from map.", static_cast<const void*>(obj.get()));
 }
 
 bool Map2D::objectIsRemoved_(MapObject* obj) {
-    if (objectIsInMap_(*obj)) {
+    if ( objectIsInMap_(obj)) {
         offmap_time_.erase(obj);
         return false;
     }
@@ -352,9 +431,34 @@ bool Map2D::objectIsRemoved_(MapObject* obj) {
     }
     const float dt = std::chrono::duration_cast<std::chrono::duration<float>>(now - it->second).count();
     if (dt >= constants::max_offmap_time) {
-        removeObject_(obj);
+        // Find the object in the vector and remove it
+        auto obj_it = std::find_if(objects_.begin(), objects_.end(),
+            [obj](const std::unique_ptr<MapObject>& ptr) {
+                return ptr.get() == obj;
+            });
+
+        if (obj_it != objects_.end()) {
+            auto obj_to_remove = std::move(*obj_it);
+            removeObject_(std::move(obj_to_remove));
+        }
+
         logger().info("Object {} removed after being off-map for {:.1f} seconds.", static_cast<const void*>(obj), dt);
         return true;
     }
     return false;
+}
+
+void Map2D::destroyAllDynamicObjects() {
+    logger().info("Destroying all {} objects in the map", objects_.size());
+    auto it = objects_.begin();
+    while (it != objects_.end()) {
+        if (*it && (*it)->bodyType() == b2_dynamicBody) {
+            auto obj_to_remove = std::move(*it);
+            it = objects_.erase(it); // erase returns iterator to next element
+            removeObject_(std::move(obj_to_remove));
+        } else {
+            ++it;
+        }
+    }
+    invalidateFrameCache();
 }

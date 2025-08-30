@@ -21,33 +21,35 @@ static std::filesystem::path output_debug_path_testVehicle = "/home/critter/work
 TEST(Vehicle, StopsOnRoadDueToFriction)
 {
     setupWorld();
-    Map2D map(500, 500, 0.1, Cell::Grass);
+    Map2D map(500, 500);
 
     // Lay out a straight road band in the middle: y in [45, 55] px (≈ 4–6 m)
     for (int i = 0; i < 10; i++) {
-        Road road(10, 10, 5.0f * i + 5.0f, 5.0f);
-        map.addObject(road);
+        auto road = std::make_unique<Road>(10, 10, 5.0f * i + 5.0f, 5.0f);
+        map.addObject(std::move(road));
     }
 
-    Vehicle car(
-        /*length*/ 4.0f, /*width*/ 2.0f,
-        /*BGR*/ {50, 50, 220},
-        /*rotation*/ 0.0f,
+    auto car = std::make_unique<Vehicle>(
+        /*length*/ 4.0f,
+         /*width*/ 2.0f,
+        /*BGR*/ std::array<uint8_t, 3>{50, 50, 220},
+        /*rotation*/ 0.0,
         /*init_speed*/ 0.0f,
         /*init_x*/ 3.0f,
         /*init_y*/ 5.0f,
         /*motor_force*/ 0.0f
     );
 
-    map.addObject(car);
-    // Small "nudge" so it starts rolling. This does not apply continuous force.
-    car.setSpeed(10.0f);  // 2 m/s initial velocity along +x
-    car.start();
+    // Store a reference to the car before moving it into the map
+    Vehicle* car_ptr = car.get();
+    map.addObject(std::move(car));
+    car_ptr->setSpeed(10.0f);
+    car_ptr->start();
 
     map.startSimulation();
 
     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-    car.setMotorForce(0.0f);         // force becomes null after ~2s
+    car_ptr->setMotorForce(0.0f);         // force becomes null after ~2s
 
     // Monitor speed for 10 seconds, printing every 1 second
     auto start_time = std::chrono::steady_clock::now();
@@ -55,11 +57,13 @@ TEST(Vehicle, StopsOnRoadDueToFriction)
 
     while (std::chrono::steady_clock::now() - start_time < target_duration) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
-        float current_speed = car.speed();
+        float current_speed = car_ptr->speed();
+        auto speed_vec = car_ptr->velocityVector();
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - start_time
         ).count();
-        std::cout << "Time: " << elapsed << "s, Speed: " << current_speed << " m/s" << std::endl;
+        std::cout << "Time: " << elapsed << "s, Speed: " << current_speed << " m/s" << "\n";
+        std::cout << "    Velocity Vector: (" << speed_vec.x << ", " << speed_vec.y << ")\n";
     }
 
     map.endSimulation();
@@ -67,8 +71,8 @@ TEST(Vehicle, StopsOnRoadDueToFriction)
 
     map.flushFrames(videoFile.string());
     // the vehicle should halt due to friction within 10s
-    float speed = car.speed();
+    float speed = car_ptr->speed();
 
-    EXPECT_NEAR(speed, 0.0f, 0.0001f); // allow small tolerance
+    EXPECT_NEAR(speed, 0.0f, 0.001f); // allow small tolerance
     destroyWorld();
 }

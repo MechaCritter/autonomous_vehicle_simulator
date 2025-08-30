@@ -6,7 +6,6 @@
 #include <filesystem>
 #include <unordered_map>
 #include <box2d/box2d.h>
-
 #include "../data/DataClasses.h"
 #include "../utils/utils.h"
 #include "../utils/logging.h"
@@ -17,40 +16,25 @@ constexpr int MAX_MAP_WIDTH = 1000;
 constexpr int MAX_MAP_HEIGHT = 1000;
 constexpr double DEFAULT_MAP_RESOLUTION = 0.1; // meters/pixel
 // const std::string DEFAULT_MAP_FILE = "../../res/maps/default_map.bmp"; // TODO: find a way to make relative path to work again
-const std::string DEFAULT_MAP_FILE = "/home/critter/workspace/autonomous_vehicle_simulator/res/maps/default_map.bmp";
+const std::string DEFAULT_MAP_FILE = "/home/critter/workspace/autonomous_vehicle_simulator/res/maps/map.bmp";
+const std::string DEFAULT_METADATA_FILE = "/home/critter/workspace/autonomous_vehicle_simulator/res/maps/map.json";
 
 class Vehicle; // forward declaration, otherwise circular dependency with Vehicle.h
 
 class Map2D {
 public:
     /**
-     * @brief Construct a new Map2D object. This object holds a pixmap where each
-     * pixel represents a cell in the map. Each cell represents a class.
+     * @brief Construct a new Map2D object. Upon creation, a "Free" object
+     * occupies the entire map area.
      *
      * @param width Width of the map in pixels
      * @param height Height of the map in pixels
-     * @param res_m Resolution of the map in meters per pixel
      */
     Map2D(
     int width,
-    int height,
-    double res_m
+    int height
     );
-    /**
-     * @brief Construct a new Map2D object. This object holds a pixmap where each
-     * pixel represents a cell in the map. Each cell represents a class.
-     *
-     * @param width Width of the map in pixels
-     * @param height Height of the map in pixels
-     * @param res_m Resolution of the map in meters per pixel
-     * @param default_value The default cell value to fill the entire map with.
-     */
-    Map2D(
-        int width,
-        int height,
-        double res_m,
-        Cell default_value
-        );
+
     Map2D(const Map2D&) = delete;          // still non-copyable
     Map2D& operator=(const Map2D&) = delete;
 
@@ -58,9 +42,18 @@ public:
     Map2D& operator=(Map2D&&) noexcept = default;
 
     /**
-     * @brief Destructor.
+     * @brief Destructor. Remove all objects from the map.
      */
-    ~Map2D() = default;
+    ~Map2D() {
+        endSimulation();
+        for (auto& obj : objects_) {
+            if (obj.get() != background_free_object_.get()) {
+                removeObject_(std::move(obj));
+            }
+        }
+        // Clean up the background Free object last
+        background_free_object_.reset();
+    };
 
     /**
      * @brief  Returns the cell class at the given coordinates. /TODO: add bounds checking
@@ -93,14 +86,35 @@ public:
      */
     [[nodiscard]] Map2D window(int cx, int cy, int radius_px) const;
 
-    static Map2D loadMap(const std::string& filename, double res_m);
+    /**
+     * @brief Load a map from a .bmp file and its associated metadata from a .json file.
+     *
+     * The metadata file should have this form: \n
+     * ```json
+     * {
+     *  "Vehicle": {"length": 4.5, "width": 2.0, "motor_force": 8000},
+     *  "Obstacle": {"length": 1.0, "width": 1},
+     *  "Grass": {"length": 2.0, "width": 2.0}
+     *  }
+     *  ```
+     *
+     *  Note that the keys in the metadata file have to match the cell type names
+     *
+     * @param map_file Path to the .bmp file
+     * @param metadata_json_file Path to the .json file containing the object metadata
+     *
+     * @return Map2D The loaded map with objects placed according to the metadata
+     *
+     * @throws std::runtime_error if the metadata or size config file could not be read
+     */
+    static Map2D loadMap(const std::string& map_file, const std::string& metadata_json_file);
 
     //getters
     [[nodiscard]] int width() const noexcept {return width_;}
     [[nodiscard]] int height() const noexcept {return height_;}
     [[nodiscard]] double resolution() const noexcept {return resolution_;}
-    [[nodiscard]] const std::vector<MapObject*>& objects() const noexcept { return objects_; }
-    [[nodiscard]] int maxFrameStored() const noexcept { return max_frames_stored_; }
+    [[nodiscard]] const std::vector<std::unique_ptr<MapObject>>& objects() const noexcept { return objects_; }
+    [[nodiscard]] unsigned int maxFrameStored() const noexcept { return max_frames_stored_; }
     [[nodiscard]] bool simulationActive() const noexcept { return simulation_active_; }
     /** Return a raw pointer to the cell at (x,y).  *No bounds check*. */
     Cell* cellPtr(int x, int y) { return &map_data_[idx(x,y)]; }
@@ -166,20 +180,22 @@ public:
      */
     [[nodiscard]] std::vector<std::array<uint8_t, 3>> toBmp() const;
 
-    /**
-     * @brief Fills the entire map data with the cell type.
-     *
-     * @param cell The cell type
-     */
-    void fillMapWith(Cell cell);
 
     /**
      * @brief Registers the Object on this map. If the object is
      * static, it will be rasterized into the map data immediately.
      *
-     * @param object object to be registered
+     * @note call `std::move(object)` to add the object. Passing the
+     * pointer directly won't work.
+     *
+     * @param object unique_ptr to object to be registered
      */
-    void addObject(MapObject& object);
+    void addObject(std::unique_ptr<MapObject> object);
+
+    /**
+     * @brief Start all objects in the map by calling their start() method
+     */
+    void startAllObjects() const;
 
     /** Start buffering frames of the current map view in a separate thread.
      * When this method is called, it updates the motion of the objects.
@@ -220,6 +236,17 @@ public:
      */
     void setMaxFramesStored(unsigned int max_frames) {max_frames_stored_ = max_frames;}
 
+    /**
+     * @brief Sets the map resolution in meters/pixel.
+     */
+    void setResolution(float resolution) {
+        if (resolution <= 0) {
+            throw std::invalid_argument("Resolution must be positive.");
+        }
+        resolution_ = resolution;
+        invalidateFrameCache();
+    }
+
     /** Query helper                                            */
     [[nodiscard]] bool isSimulating() const { return simulation_active_; }
 
@@ -234,9 +261,9 @@ public:
     void addMotionFrame(const cv::Mat& frame);
 
     /**
-     *
      * @brief Returns the pixel coordinates based on the world coordinates.
-     * **NOTE**: world_x / resolution_ is the raw pixel coordinate. Casting to int will round it down.
+     *
+     * @note world_x / resolution_ is the raw pixel coordinate. Casting to int will round it down.
      * But, if the raw value goes into the next pixel (e.g. for resolution 0.2, and the pixel value is
      * 38.9), it actually belongs to the next pixel (39). So we need to add the resolution to ensure
      * that we round up correctly.
@@ -254,12 +281,12 @@ private:
     }
     int width_ = MAX_MAP_WIDTH;
     int height_ = MAX_MAP_HEIGHT;
-    double resolution_ = DEFAULT_MAP_RESOLUTION; // meters/pixel
+    float resolution_ = DEFAULT_MAP_RESOLUTION; // meters/pixel
     int origin_x_ = 0; // origin x coordinate in pixels
     int origin_y_ = 0; // origin y coordinate in pixels
     std::vector<Cell> map_data_;
-    std::vector<MapObject*> objects_;    ///< dynamic objects attached to this map
-    bool obstacles_built_{false};
+    std::vector<std::unique_ptr<MapObject>> objects_;    ///< dynamic objects attached to this map
+    std::unique_ptr<MapObject> background_free_object_{nullptr}; ///< The background Free object that should never be deleted
 
     [[nodiscard]] static spdlog::logger& logger() {
         static std::shared_ptr<spdlog::logger> logger_ = utils::getLogger("Map2D");
@@ -291,22 +318,25 @@ private:
      * Cell type.
      * @note Only use on static objects that do not move!!!
      */
-    void stampObject(const MapObject& object);
+    void stampObject(const std::unique_ptr<MapObject>& object);
 
     /**
      * @brief Remove object from this map and destroy its Box2D body
      *
      * @param obj The object to remove
      */
-    void removeObject_(MapObject* obj);
+    void removeObject_(std::unique_ptr<MapObject> obj);
 
     /**
      * @brief Return true if the object's polygon intersects the image
      * frame.
      *
+     * @note Used a raw pointer here to avoid ownership issues, because
+     * this method does not modify the object anyway.
+     *
      * @param obj The object to check
      */
-    bool objectIsInMap_(const MapObject& obj) const;
+    bool objectIsInMap_(MapObject* obj) const;
 
     /**
      * @brief Decide if a dynamic object must be removed at this tick and
@@ -317,11 +347,26 @@ private:
      * - If off-frame duration >= OFFMAP_TTL_SECONDS, request removal.
      * - If back on-frame, clear TTL.
      *
+     * @note Used a raw pointer here to avoid ownership issues, because
+     * this method does not modify the object anyway.
+     *
      * @param obj Dynamic object pointer (non-null for evaluation).
      *
      * @return true if the object has been removed
      */
     bool objectIsRemoved_(MapObject* obj);
+
+    /**
+     * @brief removes all dynamic objects from the map.
+     */
+    void destroyAllDynamicObjects();
+
+    /**
+     * @brief Fills the entire map data with the cell type.
+     *
+     * @param cell The cell type
+     */
+    void fillMapWith(Cell cell);
 };
 
 /**
