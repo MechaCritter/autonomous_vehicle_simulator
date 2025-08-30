@@ -85,6 +85,14 @@ std::vector<std::array<uint8_t, 3>> Map2D::toBmp() const {
     return bmp_matrix;
 }
 
+std::vector<std::array<uint8_t, 3>> Map2D::toBmp(std::vector<Cell> cell_data) {
+    std::vector<std::array<uint8_t, 3>> bmp_matrix;
+    for (const auto& cell : cell_data) {
+        bmp_matrix.push_back(cellToColor(cell));
+    }
+    return bmp_matrix;
+}
+
 void Map2D::fillMapWith(Cell cell) {
     for (int y = 0; y < height_; ++y)
         for (int x = 0; x < width_; ++x)
@@ -105,10 +113,12 @@ Map2D::Map2D(int width, int height) {
     // Create a giant Free object that fills the entire map
     float map_width_meters = width * resolution_;
     float map_height_meters = height * resolution_;
-    background_free_object_ = std::make_unique<Free>(map_width_meters, map_height_meters,
+    auto free_object = std::make_unique<Free>(map_width_meters, map_height_meters,
                                        map_width_meters/2, map_height_meters/2, 0.0f);
-    // Create a copy for the objects vector
-    addObject(std::move(background_free_object_));
+    background_free_object_ = free_object.get(); // warning "the address of the local variable 'free_object' may escape the function" can be ignored because
+                                                // the object is added to the map, hence the map keeps it alive
+    // move the background_free_
+    addObject(std::move(free_object));
 }
 
 Map2D Map2D::loadMap(const std::string &map_file,
@@ -269,6 +279,7 @@ void Map2D::initializeCachedFrame() const {
 
 void Map2D::invalidateFrameCache() const {
     frame_cache_valid_ = false;
+    snapshot_.clear();
 }
 
 void Map2D::addMotionFrame()
@@ -281,7 +292,17 @@ void Map2D::addMotionFrame()
     // Copy the cached original frame
     cv::Mat frame = cached_original_frame_.clone();
 
-    // 2) overlay each dynamic object's current polygon from Box2D
+    // Stamp dynamic objects onto the frame
+    stampObjectsOntoFrame_(frame);
+
+    std::vector<std::array<std::uint8_t, 3>> snapshot_bmp = utils::matToArrayVector(frame);
+    snapshot_ = bmpToCells(snapshot_bmp);
+    capture_frames_.push_back(std::move(frame));
+}
+
+// New method: stamps all dynamic objects onto the given frame
+void Map2D::stampObjectsOntoFrame_(cv::Mat& frame) const
+{
     for (const auto& obj : objects_) {
         if (obj->bodyType() == b2_staticBody) continue; // skip static objects
         const auto corners = obj->worldBoxCorners();
@@ -305,7 +326,6 @@ void Map2D::addMotionFrame()
             cv::LINE_AA
         );
     }
-    capture_frames_.push_back(std::move(frame));
 }
 
 void Map2D::endSimulation() {
@@ -395,7 +415,7 @@ void Map2D::removeObject_(std::unique_ptr<MapObject> obj)
 {
     if (!obj) return;
 
-    if (obj.get() == background_free_object_.get()) {
+    if (obj.get() == background_free_object_) {
         logger().warn("Attempted to remove protected background Free object. Ignoring deletion request.");
         return;
     }

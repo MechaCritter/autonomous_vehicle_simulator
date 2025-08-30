@@ -125,6 +125,7 @@ public:
     [[nodiscard]] const b2BodyDef& initialBodyDef() const noexcept { return body_descriptor_.body_def; }
     [[nodiscard]] b2BodyType bodyType() const noexcept { return body_descriptor_.body_def.type; }
 
+
     /**
      * @brief Allows the object to be started updating its position continuously.
      */

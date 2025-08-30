@@ -78,6 +78,7 @@ add_executable(vehicle_simulator.exe
         objects/Vehicle.cpp
         objects/Grass.cpp
         objects/Road.cpp
+        objects/Free.cpp
         objects/Obstacle.cpp
         objects/MapObject.cpp
         ${PROTO_SRCS}
@@ -118,6 +119,7 @@ add_library(testlib
         objects/Vehicle.cpp
         objects/Grass.cpp
         objects/Road.cpp
+        objects/Free.cpp
         objects/Obstacle.cpp
         utils/logging.cpp
         objects/MapObject.cpp

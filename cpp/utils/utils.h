@@ -8,9 +8,8 @@
 #include <string>
 #include <array>
 #include <vector>
-#include <cmath>
-#include <optional>
-#include <eigen3/Eigen/Dense>
+#include <stdexcept>
+#include <opencv2/opencv.hpp>
 #include <box2d/box2d.h>
 #include "../data/DataClasses.h"
 
@@ -41,6 +40,16 @@ namespace utils {
                   int height,
                   const std::vector<std::array<uint8_t, 3> > &bgr,
                   bool topDown = false);
+
+    /**
+     * @brief Convert an OpenCV Mat (CV_8UC3) into a vector of BGR triplets.
+     *
+     * @param frame Input image (must be CV_8UC3).
+     * @return std::vector<std::array<uint8_t, 3>> Flattened pixel values in BGR order.
+     *
+     * @throws std::invalid_argument if frame is empty or not CV_8UC3.
+     */
+    std::vector<std::array<uint8_t, 3>> matToArrayVector(const cv::Mat& frame);
 }
 
 

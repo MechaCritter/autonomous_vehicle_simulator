@@ -150,6 +150,7 @@ TEST_P(LidarParamTest, GenerateData)
 
     // line breaks for the next test
     std::cout << "---------------------------------------------------\n" << std::endl;
+    destroyWorld();
 }
 
 INSTANTIATE_TEST_SUITE_P(

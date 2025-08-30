@@ -87,3 +87,25 @@ void utils::writeBmp(const std::string& path,
     }
 }
 
+std::vector<std::array<uint8_t, 3>> utils::matToArrayVector(const cv::Mat& frame) {
+    if (frame.empty()) {
+        throw std::invalid_argument("Input frame is empty.");
+    }
+    if (frame.type() != CV_8UC3) {
+        throw std::invalid_argument("Input frame must be CV_8UC3 (8-bit, 3-channel).");
+    }
+
+    std::vector<std::array<uint8_t, 3>> pixels;
+    pixels.reserve(frame.rows * frame.cols);
+
+    for (int r = 0; r < frame.rows; ++r) {
+        const cv::Vec3b* row_ptr = frame.ptr<cv::Vec3b>(r);
+        for (int c = 0; c < frame.cols; ++c) {
+            const cv::Vec3b& px = row_ptr[c]; // BGR pixel
+            pixels.push_back({px[0], px[1], px[2]});
+        }
+    }
+
+    return pixels;
+}
+

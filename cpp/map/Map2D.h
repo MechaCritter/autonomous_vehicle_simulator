@@ -46,13 +46,9 @@ public:
      */
     ~Map2D() {
         endSimulation();
-        for (auto& obj : objects_) {
-            if (obj.get() != background_free_object_.get()) {
-                removeObject_(std::move(obj));
-            }
-        }
-        // Clean up the background Free object last
-        background_free_object_.reset();
+        offmap_time_.clear();
+        objects_.clear();
+        background_free_object_ = nullptr;
     };
 
     /**
@@ -116,6 +112,15 @@ public:
     [[nodiscard]] const std::vector<std::unique_ptr<MapObject>>& objects() const noexcept { return objects_; }
     [[nodiscard]] unsigned int maxFrameStored() const noexcept { return max_frames_stored_; }
     [[nodiscard]] bool simulationActive() const noexcept { return simulation_active_; }
+    [[nodiscard]] const std::vector<Cell> &snapshot() const {
+        initializeCachedFrame();
+        if (snapshot_.empty()) {
+            cv::Mat frame = cached_original_frame_.clone();
+            stampObjectsOntoFrame_(frame);
+            snapshot_ = bmpToCells(utils::matToArrayVector(frame));
+        }
+        return snapshot_;
+    }
     /** Return a raw pointer to the cell at (x,y).  *No bounds check*. */
     Cell* cellPtr(int x, int y) { return &map_data_[idx(x,y)]; }
 
@@ -179,6 +184,11 @@ public:
      * @brief converts the map to a bmp representation.
      */
     [[nodiscard]] std::vector<std::array<uint8_t, 3>> toBmp() const;
+
+    /**
+     * @brief converts the cell data into a bmp representation.
+     */
+    [[nodiscard]] static std::vector<std::array<uint8_t, 3>> toBmp(std::vector<Cell> cell_data);
 
 
     /**
@@ -274,20 +284,21 @@ public:
      */
     [[nodiscard]] std::pair<int, int> worldToCell(float world_x, float world_y) const;
 
+
+
 private:
     [[nodiscard]] int idx(int x, int y) const noexcept { return y * width_ + x; }
     [[nodiscard]] std::pair<int, int> idxToPx(int idx) const noexcept {
         return {idx % width_, idx / width_};
     }
-    int width_ = MAX_MAP_WIDTH;
-    int height_ = MAX_MAP_HEIGHT;
+    int width_ = MAX_MAP_WIDTH;  // [pixels]
+    int height_ = MAX_MAP_HEIGHT;  // [pixels]
     float resolution_ = DEFAULT_MAP_RESOLUTION; // meters/pixel
     int origin_x_ = 0; // origin x coordinate in pixels
     int origin_y_ = 0; // origin y coordinate in pixels
     std::vector<Cell> map_data_;
     std::vector<std::unique_ptr<MapObject>> objects_;    ///< dynamic objects attached to this map
-    std::unique_ptr<MapObject> background_free_object_{nullptr}; ///< The background Free object that should never be deleted
-
+    MapObject* background_free_object_ = nullptr; ///< The object that occupies the whole map upon creation
     [[nodiscard]] static spdlog::logger& logger() {
         static std::shared_ptr<spdlog::logger> logger_ = utils::getLogger("Map2D");
         return *logger_;
@@ -306,11 +317,15 @@ private:
     // Cache for the original frame without dynamic objects
     mutable cv::Mat cached_original_frame_;
     mutable bool frame_cache_valid_{false};
+    mutable std::vector<Cell> snapshot_; ///< snapshot of the current frame with dynamic objects
 
     /** Initialize or refresh the cached original frame */
     void initializeCachedFrame() const;
 
-    /** Invalidate the cached frame (call when static map data changes) */
+    /**
+     * Invalidate the cached frame (call when static map data changes)
+     * @note also clears the snapshot.
+     */
     void invalidateFrameCache() const;
 
     /**
@@ -367,6 +382,13 @@ private:
      * @param cell The cell type
      */
     void fillMapWith(Cell cell);
+
+    /**
+     * @brief Stamps all dynamic objects onto the given frame.
+     *
+     * @param frame The frame to stamp objects onto.
+     */
+    void stampObjectsOntoFrame_(cv::Mat& frame) const;
 };
 
 /**
