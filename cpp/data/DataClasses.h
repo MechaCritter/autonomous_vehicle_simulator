@@ -42,7 +42,7 @@ enum class Cell : std::uint8_t {
     Grass = 7
 };
 
-inline std::unordered_map<Cell, float> friction_map = {
+inline const std::unordered_map<Cell, float> friction_map = {
     {Cell::Free, 0.0f},      // Free space
     {Cell::Road, 0.9f},      // Road surface
     {Cell::Vehicle, 1.0f},   // Vehicle on vehicle

@@ -246,7 +246,12 @@ void Map2D::startSimulation() {
                         }
                     }
                 }
-                b2World_Step(WORLD, constants::step_size, 4);
+                {
+                    std::lock_guard<std::mutex> lock(world_mutex); // this lock was necesssary because otherwise, a
+                        // race condition could occur when raycasting (see class Lidar2D, which also needs a lock)
+                        // happens at the same time as the world step
+                    b2World_Step(WORLD, constants::step_size, 4);
+                }
                 // bounce response (perfectly rigid bodies)
                 using namespace std::chrono_literals;
                 this->addMotionFrame();  // capture the current frame

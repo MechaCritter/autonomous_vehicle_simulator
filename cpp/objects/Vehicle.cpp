@@ -24,6 +24,11 @@ void Vehicle::addSensor(std::unique_ptr<Sensor> s, MountSide side, float offset)
 {
     Sensor* sensor_ptr = s.get();
     sensors_.push_back(std::move(s)); // transfers ownership to vehicle
+    if (map_) {
+        setMap(map_); // re-register sensors on the map
+    }
+    // Provide owner/body/filter so the sensor can ignore us and reuse our collidable set
+    sensor_ptr->setOwner(this);
     mounts_.push_back({sensor_ptr, side, offset}); // non-owning view used for pose updates
     updateSensors_();   // place immediately
 }
@@ -31,10 +36,8 @@ void Vehicle::addSensor(std::unique_ptr<Sensor> s, MountSide side, float offset)
 void Vehicle::setMap(Map2D *map) {
     MapObject::setMap(map);
     for (auto& sensor : sensors_) {
-        map->addObject(std::move(sensor)); // register sensor on the map
+        sensor->setMap(map);
     }
-    // owns none after adding to map
-    sensors_.clear();
     updateSensors_(); // place sensors immediately
 }
 
@@ -50,18 +53,20 @@ void Vehicle::updateSensors_() const {
         b2Vec2 rel;
         switch (m.side) {
             case MountSide::Front:
-            default: // fallback to Front
-                logger().warn("Unknown mount side. Defaulting to Front.");
                 rel = { halfL + m.offset, 0.0f };
                 break;
             case MountSide::Back:
                 rel = { -halfL - m.offset, 0.0f };
                 break;
             case MountSide::Left:
-                rel = { 0.0f, halfW + m.offset };
+                rel = { 0.0f, halfW + m.offset};
                 break;
             case MountSide::Right:
-                rel = { 0.0f, -halfW - m.offset };
+                rel = { 0.0f, -halfW - m.offset};
+                break;
+            default: // fallback to Front
+                logger().warn("Unknown mount side. Defaulting to Front.");
+                rel = { halfL + m.offset, 0.0f };
                 break;
         }
         // Convert to world using Box2D helper
@@ -97,7 +102,8 @@ void Vehicle::updateFriction_() const {
         const b2Vec2 pos = b2Body_GetPosition(id);
         const auto [px, py] = map_->worldToCell(pos.x, pos.y);
         const Cell ground = map_->atPx(px, py);
-        auto linDamp = friction_map[ground];
+        auto search = friction_map.find(ground);
+        float linDamp = search != friction_map.end() ? search->second : 0.0f;
         b2Body_SetLinearDamping(id,  linDamp);
     }
 }

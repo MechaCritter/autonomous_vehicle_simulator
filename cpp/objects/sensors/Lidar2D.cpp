@@ -1,49 +1,102 @@
 #include "Lidar2D.h"
 #include "../utils/utils.h"
 #include <chrono>
+#include <filesystem>
+#include <sstream>
+#include <stdexcept>
+#include <cmath>
+#include <vector>
+#include <iostream>
 
 // constants
 std::filesystem::path lidar_debug_path = "/home/critter/workspace/autonomous_vehicle_simulator/cpp/tests/debug";
 
+// Small POD to carry results back from the ray-cast callback
+struct RaycastCtx {
+    b2BodyId ignoreA{};
+    b2BodyId ignoreB{};
+    float    bestFraction{1.0f};
+    bool     hit{false};
+};
+
+// Ray-cast callback: skip owner + this sensor; skip sensors; accept first valid hit
+static float LidarRaycastCallback(b2ShapeId shapeId, b2Vec2 point, b2Vec2 normal, float fraction, void* user)
+{
+    auto* ctx = static_cast<RaycastCtx*>(user);
+    const b2BodyId body = b2Shape_GetBody(shapeId);
+    if (B2_ID_EQUALS(body, ctx->ignoreA) || B2_ID_EQUALS(body, ctx->ignoreB)) {
+        return -1.0f; // ignore and continue
+    }
+    if (b2Shape_IsSensor(shapeId)) {
+        return -1.0f; // sensors never block the beam
+    }
+    // accept this hit and clip the ray to this point (closest-so-far)
+    ctx->hit = true;
+    ctx->bestFraction = fraction;
+    return fraction;
+}
 
 double Lidar2D::castRay(double rel_angle, const Map2D &map, std::vector<std::pair<int,int>>* cells) const {
-    const double step = 0.5 * map.resolution();
-    const b2Vec2 pos = position();
+    // const double step = 0.5 * map.resolution();
+    const b2Vec2 origin = position();
     const float theta = b2Rot_GetAngle(rotation());
     const double global_angle = theta + rel_angle;
     const double half_fov = 0.5 * fov_;
-    const auto map_snapshot = map.snapshot();
-    if (map_snapshot.size() != static_cast<size_t>(map.width() * map.height())) {
-        throw std::runtime_error("Map snapshot size mismatch. Actual: " + std::to_string(map_snapshot.size()) +
-                                 ", Expected: " + std::to_string(static_cast<size_t>(map.width() * map.height())) + ".");
-    }
     if (rel_angle > half_fov || rel_angle < -half_fov) {
         throw std::invalid_argument("Angle out of range: " + std::to_string(rel_angle) +
                                     " (max: " + std::to_string(half_fov) + ", min: " + std::to_string(-half_fov) + ")");}
 
-    /* start one step away to avoid hitting the vehicle cell itself */
-    for (double d = step; d <= max_range_; d += step) {
+    // const auto& map_snapshot = map.snapshot();
+    // if (map_snapshot.size() != map.width() * map.height()) {
+    //     throw std::runtime_error("Map snapshot size mismatch. Actual: " + std::to_string(map_snapshot.size()) +
+    //                              ", Expected: " + std::to_string(map.width() * map.height()) + ".");
+    // }
 
-        const double world_x = pos.x + d * cos(global_angle);
-        const double world_y = pos.y + d * sin(global_angle);
+    const b2Vec2 direction   = { static_cast<float>(std::cos(global_angle)),
+                       static_cast<float>(std::sin(global_angle)) };
+    const b2Vec2 translation = { direction.x * static_cast<float>(max_range_),
+                             direction.y * static_cast<float>(max_range_) };
 
-        auto [pixel_x, pixel_y] = map.worldToCell(world_x, world_y); // convert to pixel coordinates
-
-        // if px and py are out of bounds, assume no obstacle => return max range
-        if (pixel_x < 0 || pixel_x >= map.width() || pixel_y < 0 || pixel_y >= map.height()) {
-            return max_range_;
-        }
-
-        if (cells) cells->emplace_back(pixel_x, pixel_y); // record path
-
-        const Cell c = map_snapshot[pixel_y * map.width() + pixel_x];
-        if (c == Cell::Obstacle || c == Cell::Vehicle || c == Cell::Reserved) {
-            logger().info("Lidar {} hit obstacle {} at ({},{})",
-                           name(), Map2D::cellToString(c), pixel_x, pixel_y);
-            return d;
-        }
+    b2QueryFilter qf = b2DefaultQueryFilter();
+    if (owner()) {
+        const b2Filter of = ownerFilter();
+        qf.categoryBits = of.categoryBits;
+        qf.maskBits     = of.maskBits;
     }
-    return max_range_; // hit nothing
+
+    RaycastCtx ctx{};
+    ctx.ignoreA = body_descriptor_.bodyId;
+    ctx.ignoreB = owner() ? ownerBodyId() : b2BodyId{};
+    {
+        std::lock_guard lock(world_mutex);
+        (void)b2World_CastRay(WORLD, origin, translation, qf, &LidarRaycastCallback, &ctx);
+    }
+
+    const double d = ctx.hit ? (ctx.bestFraction * max_range_) : max_range_;
+
+    // /* start one step away to avoid hitting the vehicle cell itself */
+    // for (double d = step; d <= max_range_; d += step) {
+    //
+    //     const double world_x = origin.x + d * cos(global_angle);
+    //     const double world_y = origin.y + d * sin(global_angle);
+    //
+    //     auto [pixel_x, pixel_y] = map.worldToCell(world_x, world_y); // convert to pixel coordinates
+    //
+    //     // if px and py are out of bounds, assume no obstacle => return max range
+    //     if (pixel_x < 0 || pixel_x >= map.width() || pixel_y < 0 || pixel_y >= map.height()) {
+    //         return max_range_;
+    //     }
+    //
+    //     if (cells) cells->emplace_back(pixel_x, pixel_y); // record path
+    //
+    //     const Cell c = map_snapshot[pixel_y * map.width() + pixel_x];
+    //     if ((c == Cell::Obstacle || c == Cell::Vehicle || c == Cell::Reserved)) {
+    //         logger().info("Lidar {} hit obstacle {} at ({},{})",
+    //                        name(), Map2D::cellToString(c), pixel_x, pixel_y);
+    //         return d;
+    //     }
+    // }
+    return d;; // hit nothing
 }
 
 std::unique_ptr<sensor_data::SensorData> Lidar2D::generateData()
@@ -53,8 +106,6 @@ std::unique_ptr<sensor_data::SensorData> Lidar2D::generateData()
     auto data = std::make_unique<sensor_data::SensorData>();
 
     auto* hdr = data->mutable_header();
-    hdr->set_name(name());
-    hdr->set_sensor_type(sensorType());
     auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
     std::chrono::system_clock::now()).time_since_epoch().count();
     hdr->set_timestamp(static_cast<uint64_t>(now));
@@ -78,8 +129,7 @@ std::unique_ptr<sensor_data::SensorData> Lidar2D::generateData()
 }
 
 #ifdef WITH_OPENCV_DEBUG
-std::unique_ptr<sensor_data::SensorData> Lidar2D::generateDataWithDebugVideo(const std::string& video_filename)
-{
+std::unique_ptr<sensor_data::SensorData> Lidar2D::generateDataWithDebugVideo(const std::string& video_filename) const {
     if (!map_) throw std::runtime_error("Lidar map pointer not set!");
 
     auto data = std::make_unique<sensor_data::SensorData>();

@@ -4,6 +4,10 @@
 #include <filesystem>
 #include <include/spdlog/sinks/basic_file_sink.h>
 #include "../objects/sensors/Lidar2D.h"
+#include "../objects/Vehicle.h"
+#include "../objects/Free.h"
+#include "../objects/Obstacle.h"
+#include "../objects/Road.h"
 #include "../map/Map2D.h"
 #include "../data/DataClasses.h"
 
@@ -61,7 +65,8 @@ class LidarParamTest : public ::testing::TestWithParam<LidarParam> {};
 *  and the index of the first beam that should hit the obstacle.
 */
 static std::pair<double, int>
-expected_distance_and_angle_diff(const LidarParam& P,
+expected_distance_and_angle_diff(
+    const LidarParam& P,
     float scan_angle_min,
     float scan_ranges_size,
     float scan_angle_increment,
@@ -113,15 +118,35 @@ TEST_P(LidarParamTest, GenerateData)
     setupWorld();
     Map2D map(P.map_width, P.map_height);
     map.setResolution(P.res);
-    map.setPx(P.obs_x, P.obs_y, P.obstacle_cls);
+    // map.setPx(P.obs_x, P.obs_y, P.obstacle_cls);
+    if (P.obstacle_cls == Cell::Vehicle) {
+        auto vehicle = std::make_unique<Vehicle>(1.0f, 1.0f, std::array<uint8_t,3>{255,0,0}, 0.0f, 0.0f,
+                                                 P.obs_x * P.res, P.obs_y * P.res, 0.0f);
+        map.addObject(std::move(vehicle));
+    }
+    else if (P.obstacle_cls == Cell::Obstacle) {
+        auto obstacle = std::make_unique<Obstacle>(1.0f, 1.0f,
+                                                   P.obs_x * P.res, P.obs_y * P.res, 0.0f);
+        map.addObject(std::move(obstacle));
+    }
+    else if (P.obstacle_cls == Cell::Road) {
+        auto road = std::make_unique<Road>(1.0f, 1.0f,
+                                           P.obs_x * P.res, P.obs_y * P.res, 0.0f);
+        map.addObject(std::move(road));
+    }
+    else if (P.obstacle_cls == Cell::Free) {
+        auto free = std::make_unique<Free>(1.0f, 1.0f,
+                                           P.obs_x * P.res, P.obs_y * P.res, 0.0f);
+        map.addObject(std::move(free));
+    }
 
     // tolerance = half the resolution + a tolerance of 1e-3
     float tol = P.res * 0.5 + 1e-3;
 
     float theta_in_rad = P.theta_in_deg * M_PI / 180.0f; // convert degrees to radians
     std::string lidar_name = "lid_testid" + std::to_string(P.test_id);
-    Lidar2D lidar(lidar_name, "front",&map, 10, 2, 2, theta_in_rad, P.px * P.res,P.py * P.res);
-
+    Lidar2D lidar(lidar_name, "front", 10, 2, 2, theta_in_rad, P.px * P.res,P.py * P.res);
+    lidar.setMap(&map);
     std::unique_ptr<sensor_data::SensorData> data;
 
 #ifdef WITH_OPENCV_DEBUG
@@ -163,7 +188,7 @@ INSTANTIATE_TEST_SUITE_P(
         LidarParam{3, 0.1f, 60, 60, 40,50, 10,10, 0, Cell::Road}, // ray should go through => yield max range
         LidarParam{4, 0.5f, 80, 40, 20,20, 0,20, 0, Cell::Obstacle}, // exactly at max_range
         LidarParam{5, 0.51f, 80, 40, 20,20, 0,20, 0, Cell::Obstacle}, // just a little bit above max_range => should yield max range
-        LidarParam{6, 0.5f, 80, 20, 70,10,  60, 5,  0, Cell::Reserved},
+        LidarParam{6, 0.5f, 80, 20, 70,10,  60, 5,  0, Cell::Free},
         LidarParam{7, 0.5f, 30, 70,  6,40, 7,45, 0, Cell::Vehicle},   // outside FoV, but within max range
 
         // // TODO: the test below fails!! fail when too close to each other??
@@ -171,3 +196,47 @@ INSTANTIATE_TEST_SUITE_P(
         // // TODO: add test with different lidar poses!
     )
 );
+
+TEST(LidarBox2D, DoesNotHitOwnVehicle)
+{
+    setupWorld();
+    Map2D map(200, 200);
+    map.setResolution(0.1f); // 10 cm/px
+
+    // Host vehicle at (5m, 5m), facing +X; mount lidar at Front (offset 0)
+    Vehicle host(4.0f, 2.0f, {50,50,220}, 0.0f, 0.0f, 5.0f, 5.0f, 0.0f);
+    auto lidar = std::make_unique<Lidar2D>("lidar_front", "front", 20, 0.05f, 0.05f, 0.0f, 0.0f, 0.0f);
+    Lidar2D* lidar_ptr = lidar.get(); // keep a raw ptr for later use
+    host.addSensor(std::move(lidar), Vehicle::MountSide::Front, 0.0f);
+    host.setMap(&map);
+
+    // Cast straight ahead: must NOT hit the host vehicle
+    const double d = lidar_ptr->castRay(0.0, map);
+    EXPECT_DOUBLE_EQ(d, lidar_ptr->maxRange()); // requirement (1)
+    destroyWorld();
+}
+
+TEST(LidarBox2D, HitsOtherVehicleAtKnownDistance)
+{
+    setupWorld();
+    Map2D map(400, 200);
+    map.setResolution(0.1f);
+
+    Vehicle host(4.0f, 2.0f, {50,50,220}, 0.0f, 0.0f, 5.0f, 5.0f, 0.0f);
+    auto lidar = std::make_unique<Lidar2D>("lidar_front", "front", 20, 0.05f, 0.05f, 0.0f, 0.0f, 0.0f);
+    Lidar2D* lidar_ptr = lidar.get(); // keep a raw ptr for later use
+    host.addSensor(std::move(lidar), Vehicle::MountSide::Front, 0.0f);
+    host.setMap(&map);
+
+    // Place target vehicle 3.0m ahead of the host's front face, same Y
+    const float targetLen = 4.0f;
+    const float targetHalf = 0.5f * targetLen;
+    // Host front face is at host_x + 0.5*host_len = 5 + 2 = 7
+    // Put target center so its near face is at 7 + 3.0 => center = near + halfLen
+    Vehicle target(targetLen, 2.0f, {220,50,50}, 0.0f, 0.0f, /*center x*/ 7.0f + 3.0f + targetHalf, 5.0f, 0.0f);
+    target.setMap(&map);
+
+    const double d = lidar_ptr->castRay(0.0, map);
+    EXPECT_NEAR(d, 3.0, 1e-3); // within 1mm
+    destroyWorld();
+}

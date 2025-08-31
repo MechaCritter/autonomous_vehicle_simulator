@@ -45,26 +45,8 @@ set(BOX2D_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BOX2D_BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(box2d)
 
-find_package(protobuf REQUIRED)
-find_package(gRPC REQUIRED)
-find_package(absl REQUIRED)
-find_package(OpenSSL REQUIRED) # open-ssl is needed for gRPC
 find_package(OpenCV REQUIRED) # opencv for video outputs when debugging sensors
 find_package(Eigen3 REQUIRED)
-
-# Path to the plugin
-find_program(GRPC_CPP_PLUGIN_EXECUTABLE grpc_cpp_plugin)
-if(NOT GRPC_CPP_PLUGIN_EXECUTABLE)
-    message(FATAL_ERROR "grpc_cpp_plugin not found")
-else()
-    message(STATUS "Found gRPC C++ plugin: ${GRPC_CPP_PLUGIN_EXECUTABLE}")
-endif()
-
-
-# Adding the generated protobuf sources to your target.
-set(PROTO_SRCS
-        objects/sensors/proto/generated/sensor_data.pb.cc
-        objects/sensors/proto/generated/sensor_data.grpc.pb.cc)
 
 # Executable
 message(STATUS "OpenCV_LIBS: ${OpenCV_LIBS}")
@@ -81,7 +63,6 @@ add_executable(vehicle_simulator.exe
         objects/Free.cpp
         objects/Obstacle.cpp
         objects/MapObject.cpp
-        ${PROTO_SRCS}
 )
 
 # Add flags to build process to catch memory leaks. Only enable sanitizer in Debug builds
@@ -95,7 +76,6 @@ endif()
 target_link_libraries(vehicle_simulator.exe
         PRIVATE
             spdlog
-            protobuf::libprotobuf
             ${OpenCV_LIBS}
             box2d::box2d
 )
@@ -151,7 +131,6 @@ add_executable(code_test
 target_link_libraries(code_test
         PRIVATE
         testlib
-        protobuf::libprotobuf
         spdlog
         ${OpenCV_LIBS}
         gtest_main         # gives you int main(int, char**)
@@ -174,31 +153,4 @@ add_custom_target(clean_test_videos
         VERBATIM
 )
 
-
-### Create a small library with the production sources you need in tests
-#add_library(testlib
-#        ${PROJECT_SOURCE_DIR}/map/Map2D.cpp
-#        ${PROJECT_SOURCE_DIR}/utils/utils.cpp
-#        ${PROJECT_SOURCE_DIR}/sensors/Lidar2D.cpp
-#)
-#
-#target_include_directories(testlib PUBLIC
-#        ${PROJECT_SOURCE_DIR}   # so tests can do #include "map/Map2D.h"
-#)
-#
-### ----- Test executable --------------------------------------------------
-#add_executable(code_test
-#        ${PROJECT_SOURCE_DIR}/tests/test_map2d.cpp
-#        ${PROJECT_SOURCE_DIR}/tests/test_lidar2d.cpp
-#)
-#message(STATUS "Code test built with ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
-#target_link_libraries(code_test
-#        PRIVATE
-#        testlib
-#        gtest_main         # gives you int main(int, char**)
-#)#
-#
-### Let CTest know about it
-#include(GoogleTest)          # comes with googletest
-#gtest_discover_tests(code_test)
 

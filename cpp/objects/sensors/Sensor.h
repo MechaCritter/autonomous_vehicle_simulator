@@ -9,10 +9,14 @@
 #define SENSOR_H
 
 #include <string>
-#include "proto/generated/sensor_data.pb.h"
+#include <atomic>
+#include <memory>
+#include "SensorData.h"
 #include "../data/DataClasses.h"
 #include "../map/Map2D.h"
 #include "../objects/MapObject.h"
+
+class Vehicle;
 
 class Sensor : public MapObject {
 public:
@@ -21,7 +25,6 @@ public:
      *
      * @param name      Human‑readable identifier
      * @param position  Mounting position (front/back/left/right/…)
-     * @param map    Pointer to the map object
      * @param sample_rate_hz Sensor sample rate in Hz
      * @param length Length of the sensor in meters (default: 0.05m)
      * @param width Width of the sensor in meters (default: 0.05m)
@@ -31,7 +34,6 @@ public:
      */
     Sensor(std::string name,
         std::string position,
-        Map2D* map,
         uint16_t sample_rate_hz,
         float length = 0.05f,
         float width = 0.05f,
@@ -64,14 +66,31 @@ public:
 
     void update() override;
 
+
+    /**
+     * @brief Register the owning vehicle and its collision filter.
+     *
+     * The Lidar uses this to ignore the owner during ray casting and to
+     * reuse the owner's filter (so only "collidable" shapes count).
+     *
+     * @param owner        Owning vehicle pointer (non-owning).
+     */
+    void setOwner(Vehicle* owner) noexcept;
+
+    [[nodiscard]] Vehicle* owner() const noexcept { return owner_; }
+    [[nodiscard]] b2BodyId ownerBodyId() const noexcept { return owner_body_id_; }
+    [[nodiscard]] b2Filter ownerFilter() const noexcept { return owner_filter_; }
+
 protected:
     [[nodiscard]] spdlog::logger& logger() const override { return *rootLogger; }
-    Map2D* map_ = nullptr;
 
 private:
     std::string name_;
     std::string position_on_vehicle_;
     uint16_t sample_rate_hz_;
+    Vehicle* owner_{nullptr};  // non-owning
+    b2BodyId owner_body_id_{b2_nullBodyId};
+    b2Filter owner_filter_{b2DefaultFilter()}; // default filter until setOwner
 };
 
 #endif //SENSOR_H

@@ -12,8 +12,8 @@
 #include "../objects/MapObject.h"
 #include <../setup/Setup.h>
 
-constexpr int MAX_MAP_WIDTH = 1000;
-constexpr int MAX_MAP_HEIGHT = 1000;
+constexpr int MAX_MAP_WIDTH = 2000;
+constexpr int MAX_MAP_HEIGHT = 2000;
 constexpr double DEFAULT_MAP_RESOLUTION = 0.1; // meters/pixel
 // const std::string DEFAULT_MAP_FILE = "../../res/maps/default_map.bmp"; // TODO: find a way to make relative path to work again
 const std::string DEFAULT_MAP_FILE = "/home/critter/workspace/autonomous_vehicle_simulator/res/maps/map.bmp";

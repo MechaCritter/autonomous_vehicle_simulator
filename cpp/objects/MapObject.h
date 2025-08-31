@@ -57,7 +57,10 @@ struct BodyDescriptor {
         const float hx = 0.5f * length;
         const float hy = 0.5f * width;
         bbox = b2MakeBox(hx, hy);
-        bodyId = b2CreateBody(WORLD, &body_def);
+        {
+            std::lock_guard lock(world_mutex);
+            bodyId = b2CreateBody(WORLD, &body_def);
+        }
         shapeId = b2CreatePolygonShape(bodyId, &shape_def, &bbox);
         b2Body_ApplyMassFromShapes(bodyId);
         initVelocity(init_velocity, rotation);
@@ -124,7 +127,9 @@ public:
     [[nodiscard]] b2AABB bbox() const noexcept { return b2Body_ComputeAABB(body_descriptor_.bodyId); }
     [[nodiscard]] const b2BodyDef& initialBodyDef() const noexcept { return body_descriptor_.body_def; }
     [[nodiscard]] b2BodyType bodyType() const noexcept { return body_descriptor_.body_def.type; }
-
+    [[nodiscard]] b2Filter bodyFilter() const noexcept {
+        return b2Shape_GetFilter(body_descriptor_.shapeId);
+    }
 
     /**
      * @brief Allows the object to be started updating its position continuously.

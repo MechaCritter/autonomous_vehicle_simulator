@@ -5,6 +5,7 @@
 #ifndef LIDAR2D_H
 #define LIDAR2D_H
 #include <opencv2/opencv.hpp>
+#include <cmath>
 #include "Sensor.h"
 #include "../map/Map2D.h"
 #include "../utils/logging.h"
@@ -38,9 +39,9 @@ public:
     /**
      * @brief Generate debug visualization video showing lidar rays
      * @param video_filename Path where the video should be saved
-     * @return std::unique_ptr<sensor_data::SensorData> The sensor data
+     * @return The sensor data
      */
-    [[nodiscard]] std::unique_ptr<sensor_data::SensorData> generateDataWithDebugVideo(const std::string& video_filename);
+    [[nodiscard]] std::unique_ptr<sensor_data::SensorData> generateDataWithDebugVideo(const std::string& video_filename) const;
 #endif
 
     // Getters
@@ -61,9 +62,9 @@ protected:
     }
 private:
     int n_beams_ = 360; // number of beams
-    double fov_ = 5 * M_PI / 6; // field of view in radians
-    double max_range_ = 10.0; // maximum range in meters
-    double angle_min_ = -fov_ / 2.0; // minimum angle in radians
+    double fov_ = 5 * M_PI / 6; // Field of view, [rad]
+    double max_range_ = 10.0; // maximum range, [m]
+    double angle_min_ = -fov_ / 2.0; // minimum angle, [rad]
     double angle_increment_ = fov_ / (n_beams_ - 1);
 };
 

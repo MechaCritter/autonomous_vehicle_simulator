@@ -16,10 +16,17 @@
 class Sensor;
 class Map2D;
 
+/**
+ * @note the vehicle owns its own sensors instead of transfering to the map! so destroying the
+ * vehicle also destroys the sensors.
+ */
 class Vehicle final : public MapObject {
 public:
     /**
      * @brief Construct a Vehicle with given physical properties and initial state.
+     *
+     * @note the steering angle will be set to be equal to the initial rotation after initialization.
+     *
      * @param length      Vehicle length in meters.
      * @param width       Vehicle width in meters.
      * @param color_bgr   BGR color of the vehicle for visualization (e.g. {255,0,0} for blue).
@@ -45,7 +52,9 @@ public:
         return b2Body_GetLinearVelocity(body_descriptor_.bodyId);
     }
     [[nodiscard]] float speed() const { return b2Length(velocityVector()); }
-
+    [[nodiscard]] const std::vector<std::unique_ptr<Sensor>>& sensors() const noexcept {
+        return sensors_;
+    }
     [[nodiscard]] float yawRate() const { return yaw_rate_; }
     [[nodiscard]] float motorForce() const { return motor_force_; }
     [[nodiscard]] float maxMotorForce() const { return max_motor_force_; }
@@ -58,19 +67,14 @@ public:
     }
     // Setters
     // control variables
-    void setSpeed(float speed) {
+    void setSpeed(float speed) const {
         speed = std::clamp(speed, -max_speed_, max_speed_);
-        const b2Vec2 vel = { speed * std::cos(steering_angle_),
+        const b2Vec2 vel_relative = { speed * std::cos(steering_angle_),
                              speed * std::sin(steering_angle_) };
-        b2Body_SetLinearVelocity(body_descriptor_.bodyId, vel);
+        const b2Vec2 vel_world = b2Body_GetWorldVector(body_descriptor_.bodyId, vel_relative);
+        b2Body_SetLinearVelocity(body_descriptor_.bodyId, vel_world);
     }
 
-    /**
-     * @brief Directly command a motor force. Internally
-     * clamped to maxForceOutput.
-     *
-     *    @param force Target motor force in Newtons.
-     */
     /**
      * @brief Directly command a motor force. Internally clamped to max_motor_force_.
      * @param force Target motor force in Newtons.
@@ -90,7 +94,7 @@ public:
      * @brief Set the color of the vehicle for visualization.
      * @param color_bgr BGR color array.
      */
-    void setColor(std::array<uint8_t,3> color_bgr) { color_bgr_ = color_bgr; }
+    void setColor(const std::array<uint8_t,3> color_bgr) { color_bgr_ = color_bgr; }
 
     /**
      * @brief Get the cell type of this object (Vehicle).
@@ -112,6 +116,9 @@ public:
     /**
      * @brief Add a sensor to the vehicle at a specific mount position.
      * The sensor will be updated with the vehicle's pose when the vehicle moves.
+     *
+     * @note if the map ptr of the vehicle is not none, the sensor's map ptr will be set
+     * to the same map.
      *
      * @param s Pointer to the Sensor object to mount.
      * @param side Side of the vehicle where the sensor is mounted (Front/Back/Left/Right).
@@ -155,12 +162,12 @@ private:
     std::vector<Mount> mounts_;
     /**
      * @brief Push updated poses to mounted sensors as the vehicle moves.
-     *
      */
     void updateSensors_() const;
     /**
      * @brief Alters the linear damping of the car based on the cell
-     * it is currently on.
+     * it is currently on. If the cell cannot be found in the friction_map,
+     * friction is set to zero.
      */
     void updateFriction_() const;
 };
