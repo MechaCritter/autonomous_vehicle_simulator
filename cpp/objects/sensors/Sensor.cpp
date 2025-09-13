@@ -7,7 +7,7 @@
 #include <atomic>
 
 #include "../objects/MapObject.h"
-#include "objects/Vehicle.h"
+#include "../vehicle/Vehicle.h"
 
 // Define static member
 std::atomic<int> Sensor::sensor_count{0};

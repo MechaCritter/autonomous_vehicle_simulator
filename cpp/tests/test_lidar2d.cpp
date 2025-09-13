@@ -4,7 +4,7 @@
 #include <filesystem>
 #include <include/spdlog/sinks/basic_file_sink.h>
 #include "../objects/sensors/Lidar2D.h"
-#include "../objects/Vehicle.h"
+#include "../objects/vehicle/Vehicle.h"
 #include "../objects/Free.h"
 #include "../objects/Obstacle.h"
 #include "../objects/Road.h"
@@ -211,7 +211,7 @@ TEST(LidarBox2D, DoesNotHitOwnVehicle)
     host.setMap(&map);
 
     // Cast straight ahead: must NOT hit the host vehicle
-    const double d = lidar_ptr->castRay(0.0, map);
+    const double d = lidar_ptr->castRay(0.0);
     EXPECT_DOUBLE_EQ(d, lidar_ptr->maxRange()); // requirement (1)
     destroyWorld();
 }
@@ -236,7 +236,7 @@ TEST(LidarBox2D, HitsOtherVehicleAtKnownDistance)
     Vehicle target(targetLen, 2.0f, {220,50,50}, 0.0f, 0.0f, /*center x*/ 7.0f + 3.0f + targetHalf, 5.0f, 0.0f);
     target.setMap(&map);
 
-    const double d = lidar_ptr->castRay(0.0, map);
+    const double d = lidar_ptr->castRay(0.0);
     EXPECT_NEAR(d, 3.0, 1e-3); // within 1mm
     destroyWorld();
 }

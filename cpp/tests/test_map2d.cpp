@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 #include "../map/Map2D.h"
-#include "../objects/Vehicle.h"
+#include "../objects/vehicle/Vehicle.h"
 #include "../objects/Obstacle.h"
 #include <memory>
 #include <vector>
@@ -50,18 +50,22 @@ struct SimulationTestParams {
 };
 
 TEST(Map2D, Access) {
+    setupWorld();
     Map2D m(10,10);
     m.setPx(3,3, Cell::Road);
     EXPECT_EQ(m.atPx(3,3), Cell::Road);
+    destroyWorld();
 }
 
 TEST(Map2D, Window) {
+    setupWorld();
     Map2D g(20,20);
     g.setPx(5,5, Cell::Obstacle);
     Map2D w = g.window(5,5,3);
     EXPECT_EQ(w.width(), 6);
     EXPECT_EQ(w.height(),6);
     EXPECT_EQ(w.atPx(3,3), Cell::Obstacle); // the central cell of the window should be the obstacle
+    destroyWorld();
 }
 
 TEST(Map2D, DefaultMap) {
@@ -100,10 +104,10 @@ TEST_P(Map2DSimulationTest, SimulationScenarios) {
             config.length, config.width, config.color_bgr, config.rotation,
             config.init_speed, config.init_x, config.init_y, config.motor_force
         );
-
+        vehicle->drive();
         vehicle->setSteeringAngle(config.steering_angle);
         vehicle->setMotorForce(config.motor_force);
-        vehicle->start();
+        vehicle->startUpdating();
 
         testLogger->info("Vehicle {} has motor force {:.2f} N and speed {:.2f} m/s",
                         i + 1, vehicle->motorForce(), vehicle->speed());

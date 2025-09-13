@@ -52,3 +52,4 @@ std::array<b2Vec2, 4> MapObject::worldBoxCorners() const noexcept
     }
     return world;
 }
+

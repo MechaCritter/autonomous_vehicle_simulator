@@ -17,6 +17,12 @@ if (WITH_OPENCV_DEBUG)
     add_compile_definitions(WITH_OPENCV_DEBUG)
     message(STATUS "OpenCV debug mode enabled globally. Sensor's generateData method will generate video outputs.")
 endif()
+if(FRAME_PROFILER)
+    add_compile_definitions(FRAME_PROFILER)
+    message(STATUS "Profiling enabled globally.")
+endif()
+
+
 
 # Find necessary packages
 ## A. spdlog
@@ -55,9 +61,7 @@ add_executable(vehicle_simulator.exe
         objects/sensors/Sensor.cpp
         objects/sensors/Lidar2D.cpp
         map/Map2D.cpp
-        utils/utils.cpp
-        utils/logging.cpp
-        objects/Vehicle.cpp
+        objects/vehicle/Vehicle.cpp
         objects/Grass.cpp
         objects/Road.cpp
         objects/Free.cpp
@@ -80,12 +84,6 @@ target_link_libraries(vehicle_simulator.exe
             box2d::box2d
 )
 
-## custom flags for debugging
-#if (WITH_OPENCV_DEBUG)
-#    message(STATUS "OpenCV debug mode enabled.")
-#    target_compile_definitions(vehicle_simulator.exe PRIVATE WITH_OPENCV_DEBUG)
-#endif ()
-
 # google test
 ## Add tests
 enable_testing()
@@ -93,15 +91,13 @@ enable_testing()
 # Create a small library with the production sources you need in tests
 add_library(testlib
         map/Map2D.cpp
-        utils/utils.cpp
         objects/sensors/Lidar2D.cpp
         objects/sensors/Sensor.cpp
-        objects/Vehicle.cpp
+        objects/vehicle/Vehicle.cpp
         objects/Grass.cpp
         objects/Road.cpp
         objects/Free.cpp
         objects/Obstacle.cpp
-        utils/logging.cpp
         objects/MapObject.cpp
         ${PROTO_SRCS}
 )
@@ -120,13 +116,6 @@ add_executable(code_test
         tests/test_lidar2d.cpp
         tests/test_vehicle.cpp
 )
-
-## Add opencv debug flag
-#if (WITH_OPENCV_DEBUG)
-#    message(STATUS "OpenCV debug mode enabled. Video outputs for sensors will be generated")
-#    target_compile_definitions(code_test
-#            PRIVATE WITH_OPENCV_DEBUG)
-#endif ()
 
 target_link_libraries(code_test
         PRIVATE

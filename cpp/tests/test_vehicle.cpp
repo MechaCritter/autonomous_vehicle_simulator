@@ -1,6 +1,6 @@
 #include "gtest/gtest.h"
 #include "map/Map2D.h"
-#include "objects/Vehicle.h"
+#include "../objects/vehicle/Vehicle.h"
 #include "objects/sensors/Lidar2D.h"
 #include "objects/Road.h"
 #include <../setup/Setup.h>
@@ -37,7 +37,7 @@ TEST(Vehicle, StopsOnRoadDueToFriction)
     Vehicle* car_ptr = car.get();
     map.addObject(std::move(car));
     car_ptr->setSpeed(3.0f);
-    car_ptr->start();
+    car_ptr->startUpdating();
 
     map.startSimulation();
 
@@ -124,8 +124,8 @@ TEST(Vehicle, StopWhenMeetingAnotherVehicle)
     map.addObject(std::move(car_right));
     car_left_ptr->setSpeed(35.0f);
     car_right_ptr->setSpeed(35.0f);
-    car_left_ptr->start();
-    car_right_ptr->start();
+    car_left_ptr->startUpdating();
+    car_right_ptr->startUpdating();
 
     map.startSimulation();
 
@@ -166,3 +166,129 @@ TEST(Vehicle, StopWhenMeetingAnotherVehicle)
     map.flushFrames(videoFile.string());
     destroyWorld();
 }
+
+/**
+ * @brief This test checks whether the vehicle's PID controller can correct its path
+ * after being disturbed by an external impulse. The vehicle is expected to return to
+ * its planned route on the road after being pushed off course.
+ */
+TEST(Vehicle, PIDControllerPathCorrection) {
+    setupWorld();
+    Map2D map(800, 800);
+    // Create a straight horizontal road composed of multiple segments
+    for (int i = 0; i < 10; ++i) {
+        auto road = std::make_unique<Road>(10.0f, 10.0f, 10.0f * i + 5.0, 5.0f);
+        map.addObject(std::move(road));
+    }
+    // Place a vehicle on the road
+    auto car = std::make_unique<Vehicle>(
+        4.0f, 2.0f,
+        std::array<uint8_t,3>{50, 50, 220},
+        0.0f,
+        0.0f,
+        3.0f, 5.0f,
+        12000.0f
+    );
+    Vehicle* car_ptr = car.get();
+    map.addObject(std::move(car));
+    // Plan route straight along the road
+    std::vector path = {
+        b2Vec2{3.0f, 5.0f},   // start
+        b2Vec2{95.0f, 5.0f}   // end
+    };
+    car_ptr->setGlobalPath(path);
+    car_ptr->startUpdating();
+    map.startSimulation();
+
+    // Let the vehicle drive for 2 seconds
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    // Apply a sudden lateral impulse to push the vehicle off its path
+    b2Body_ApplyLinearImpulse(car_ptr->bodyId(),
+                              b2Vec2{0.0f, 2500.0f},
+                              car_ptr->position(),
+                              true);
+    // Wait a few more seconds for the PID to correct course
+    auto timeout = std::chrono::seconds(60);
+    auto start_time = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start_time < timeout) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        // sets motor force to 0 when vehicle is almost at the goal
+        if (95 - car_ptr->position().x < 3.0f) {
+            car_ptr->brake();
+        }
+    }
+    map.endSimulation();
+    map.flushFrames((output_debug_path_testVehicle / "vehicle_pid_path_correction.mp4").string());
+    // After disturbance, vehicle should realign close to the road center (y ≈ 5.0)
+    float final_y = car_ptr->position().y;
+    EXPECT_NEAR(final_y, 5.0f, 0.05f);
+    destroyWorld();
+}
+
+/**
+ * @brief This is a more challenging version of the PIDControllerPathCorrection test. Here, the vehicle
+ * will move in a rectangular path, making 90-degree turns at each corner, while being disturbed.
+ */
+TEST(Vehicle, RectangularPath) {
+    setupWorld();
+    Map2D map(800, 800);
+    // Create a straight horizontal road composed of multiple segments
+    for (int i = 0; i < 10; ++i) {
+        auto road_hor_upper = std::make_unique<Road>(10.0f, 10.0f, 10.0f * i + 5.0, 5.0f);
+        auto road_hor_lower = std::make_unique<Road>(10.0f, 10.0f, 10.0f * i + 5.0f, 75.0f);
+        auto road_ver_left = std::make_unique<Road>(10.0f, 10.0f, 5.0f, 10.0f * i + 5.0f);
+        auto road_ver_right = std::make_unique<Road>(10.0f, 10.0f, 75.0f, 10.0f * i + 5.0f);
+        map.addObject(std::move(road_ver_left));
+        map.addObject(std::move(road_ver_right));
+        map.addObject(std::move(road_hor_upper));
+        map.addObject(std::move(road_hor_lower));
+    }
+    // Place a vehicle on the road
+    auto car = std::make_unique<Vehicle>(
+        6.0f, 3.0f,
+        std::array<uint8_t,3>{50, 50, 220},
+        0.0f,
+        0.0f,
+        3.0f, 5.0f,
+        12000.0f
+    );
+    Vehicle* car_ptr = car.get();
+    map.addObject(std::move(car));
+    // Plan route straight along the road
+    std::vector path = {
+        b2Vec2{5.0f, 5.0f},
+        b2Vec2{75.0f, 5.0f}  ,
+        b2Vec2{75.0f, 75.0f},
+        b2Vec2{5.0f, 75.0f}  ,
+        b2Vec2{5.0f, 5.0f}   ,
+    };
+    car_ptr->setGlobalPath(path);
+    car_ptr->startUpdating();
+    map.startSimulation();
+
+    // Let the vehicle drive for 2 seconds
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+    // Apply a sudden lateral impulse to push the vehicle off its path
+    b2Body_ApplyLinearImpulse(car_ptr->bodyId(),
+                              b2Vec2{0.0f, 2500.0f},
+                              car_ptr->position(),
+                              true);
+    // Wait a few more seconds for the PID to correct course
+    auto timeout = std::chrono::seconds(180);
+    auto start_time = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start_time < timeout) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        // // sets motor force to 0 when vehicle is almost at the goal
+        // if (5 - car_ptr->position().x < 0.1f && 5 - car_ptr->position().y < 0.1f) {
+        //     car_ptr->brake();
+        // }
+    }
+    map.endSimulation();
+    map.flushFrames((output_debug_path_testVehicle / "vehicle_pid_rectangular_path.mp4").string());
+    // After disturbance, vehicle should realign close to the road center (y ≈ 5.0)
+    float final_y = car_ptr->position().y;
+    EXPECT_NEAR(final_y, 5.0f, 0.05f);
+    destroyWorld();
+}
+
+

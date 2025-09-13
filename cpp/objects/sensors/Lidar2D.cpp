@@ -36,7 +36,7 @@ static float LidarRaycastCallback(b2ShapeId shapeId, b2Vec2 point, b2Vec2 normal
     return fraction;
 }
 
-double Lidar2D::castRay(double rel_angle, const Map2D &map, std::vector<std::pair<int,int>>* cells) const {
+double Lidar2D::castRay(double rel_angle) const {
     // const double step = 0.5 * map.resolution();
     const b2Vec2 origin = position();
     const float theta = b2Rot_GetAngle(rotation());
@@ -45,12 +45,6 @@ double Lidar2D::castRay(double rel_angle, const Map2D &map, std::vector<std::pai
     if (rel_angle > half_fov || rel_angle < -half_fov) {
         throw std::invalid_argument("Angle out of range: " + std::to_string(rel_angle) +
                                     " (max: " + std::to_string(half_fov) + ", min: " + std::to_string(-half_fov) + ")");}
-
-    // const auto& map_snapshot = map.snapshot();
-    // if (map_snapshot.size() != map.width() * map.height()) {
-    //     throw std::runtime_error("Map snapshot size mismatch. Actual: " + std::to_string(map_snapshot.size()) +
-    //                              ", Expected: " + std::to_string(map.width() * map.height()) + ".");
-    // }
 
     const b2Vec2 direction   = { static_cast<float>(std::cos(global_angle)),
                        static_cast<float>(std::sin(global_angle)) };
@@ -67,10 +61,7 @@ double Lidar2D::castRay(double rel_angle, const Map2D &map, std::vector<std::pai
     RaycastCtx ctx{};
     ctx.ignoreA = body_descriptor_.bodyId;
     ctx.ignoreB = owner() ? ownerBodyId() : b2BodyId{};
-    {
-        std::lock_guard lock(world_mutex);
-        (void)b2World_CastRay(WORLD, origin, translation, qf, &LidarRaycastCallback, &ctx);
-    }
+    castRayWorld(origin, translation, qf, &LidarRaycastCallback, &ctx);
 
     const double d = ctx.hit ? (ctx.bestFraction * max_range_) : max_range_;
 
@@ -119,7 +110,7 @@ std::unique_ptr<sensor_data::SensorData> Lidar2D::generateData()
 
     for (int i = 0; i < n_beams_; ++i) {
         double angle = angle_min_ + i * angle_increment_;
-        double range = castRay(angle, *map_, nullptr); // no cells needed for basic operation
+        double range = castRay(angle); // no cells needed for basic operation
         scan->add_ranges(range);
         oss << range << (i+1 == n_beams_ ? "" : ", ");
     }
@@ -148,14 +139,11 @@ std::unique_ptr<sensor_data::SensorData> Lidar2D::generateDataWithDebugVideo(con
 
     std::ostringstream oss;
 
-    // Start motion capture for debug video
-    map_->startSimulation();
-
     for (int i = 0; i < n_beams_; ++i) {
         double angle = angle_min_ + i * angle_increment_;
 
         std::vector<std::pair<int,int>> cells;
-        double range = castRay(angle, *map_, &cells); // get cells hit by the ray
+        double range = castRay(angle); // get cells hit by the ray
         cv::Mat frame = map_->renderToMat();
 
         /* yellow 3×3 square at lidar location */
@@ -185,9 +173,6 @@ std::unique_ptr<sensor_data::SensorData> Lidar2D::generateDataWithDebugVideo(con
         scan->add_ranges(range);
         oss << range << (i+1 == n_beams_ ? "" : ", ");
     }
-
-    // End simulation and save video
-    map_->endSimulation();
     map_->flushFrames(video_filename);
 
     logger().debug("Lidar {} produced scan [{}] with debug video saved to {}", name(), oss.str(), video_filename);

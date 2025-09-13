@@ -5,10 +5,11 @@
 #include <unordered_set>
 #include <opencv2/videoio.hpp>
 #include <opencv2/imgproc.hpp>
+#include "../utils/logging.h"
 #include "../data/constants.h"
 #include "../include/nlohmann/json.hpp"
 #include "../objects/MapObject.h"
-#include "../objects/Vehicle.h"
+#include "../objects/vehicle/Vehicle.h"
 #include "../objects/Road.h"
 #include "../objects/Grass.h"
 #include "../objects/Obstacle.h"
@@ -29,6 +30,7 @@ struct CellColorLoader {
 
 // this class was created only so that the cell colors are loaded as soon as the program starts
 static CellColorLoader init_cell_colors;
+
 
 Cell Map2D::atPx(int x, int y) const {
     if (x < 0 || x >= width_ || y < 0 || y >= height_) {
@@ -109,6 +111,11 @@ Map2D::Map2D(int width, int height) {
     map_data_.resize(width * height);
     objects_.clear();
     frame_cache_valid_ = false;
+    cf_chunk_ = std::max<size_t>(1, max_frames_stored_ / 10);
+    // for conenience and the ring buffer, use this simple rule!
+    if (max_frames_stored_ % 10 != 0) {
+        throw std::runtime_error("max_frames_stored_ must be a multiple of 10");
+    }
 
     // Create a giant Free object that fills the entire map
     float map_width_meters = width * resolution_;
@@ -215,61 +222,212 @@ void Map2D::startAllObjects() const {
     logger().info("Starting all {} objects in the map", objects_.size());
     for (const auto& obj : objects_) {
         if (obj) {
-            obj->start();
+            obj->startUpdating();
         }
     }
 }
 
-void Map2D::startSimulation() {
-    if (simulation_thread_.joinable()) {
-        logger().warn("Simulation already active. Ending previous simulation.");
-        endSimulation();
-    }
+#ifdef FRAME_PROFILER
+#include "../utils/Profiler.h"
 
-    capture_frames_.clear();
-    simulation_active_ = true;
-
-    // starts a thread that captures frames every update_period_ milliseconds
-    simulation_thread_ = std::thread([this]() {
-        // start updating all objects
-        unsigned int num_frames = 0;
+void Map2D::startUpdatingObjectsPhysics_() {
+    physics_update_thread = std::thread([this]() {
+        FrameProfiler physics_prof("PhysicsProfiler");
         const auto period = std::chrono::duration<float>(constants::step_size);
-        while (simulation_active_ && num_frames < max_frames_stored_)
+        while (simulation_active_) {
+            physics_prof.begin_frame();
+            auto start = std::chrono::steady_clock::now();
             {
+                ScopedSection sec(physics_prof, "Update World");
+                updateWorld(start);
+            }
+            {
+                ScopedSection sec(physics_prof, "UpdateObjects");
                 for (auto& obj : objects_) {
-                    if (!objectIsRemoved_(obj.get())) {
+                    objectOffMapTooLong_(obj.get());
+                    if (obj != nullptr) {
                         if (obj->isStarted()) {
                             obj->update();
-                        }
-                        else {
+                        } else {
                             obj->freeze();
                         }
                     }
+                    else {
+                        removeObject_(std::move(obj));
+                    }
                 }
-                {
-                    std::lock_guard<std::mutex> lock(world_mutex); // this lock was necesssary because otherwise, a
-                        // race condition could occur when raycasting (see class Lidar2D, which also needs a lock)
-                        // happens at the same time as the world step
-                    b2World_Step(WORLD, constants::step_size, 4);
-                }
-                // bounce response (perfectly rigid bodies)
-                using namespace std::chrono_literals;
-                this->addMotionFrame();  // capture the current frame
-                std::this_thread::sleep_for(period);
-                ++num_frames;
-                // swaps buffers
             }
-        if (num_frames > max_frames_stored_) {
-            logger().warn("Maximum number of frames stored reached: {}. Stopping simulation.", max_frames_stored_);
+            const auto end = std::chrono::steady_clock::now();
+            const auto elapsed = end - start;
+            const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+
+            std::chrono::steady_clock::duration sleep_time{};
+            if (elapsed > period) {
+                WARN_ONCE(
+                     std::string("Update physics step step took ")
+                     + std::to_string(elapsed_ms)
+                     + " ms, which is longer than the target step size of "
+                     + std::to_string(constants::step_size * 1000.0)
+                     + " ms."
+                     );
+                sleep_time = std::chrono::steady_clock::duration::zero();
+            } else {
+                sleep_time = std::chrono::duration_cast<std::chrono::steady_clock::duration>(period - elapsed);
+            }
+            physics_prof.end_frame();
+            std::this_thread::sleep_for(sleep_time);
         }
-        simulation_active_ = false;
     });
+}
+
+void Map2D::startFrameDecoderThread_() {
+    capture_frames_.clear();
+    simulation_active_ = true;
+    decoder_thread = std::thread([this]() {
+        FrameProfiler decoder_prof("FrameDecoder");
+        unsigned int num_frames = 0;
+        const auto period = std::chrono::duration<float>(constants::step_size);
+        while (simulation_active_) {
+            decoder_prof.begin_frame();
+            if (num_frames > max_frames_stored_) {
+                logger().warn("Maximum number of frames stored reached: {}. Stopping simulation.", max_frames_stored_);
+                return;
+            }
+            auto start = std::chrono::steady_clock::now();
+             {
+                 ScopedSection sec(decoder_prof, "Add Motion Frame");
+                 this->addMotionFrame();
+             }
+            const auto end = std::chrono::steady_clock::now();
+            const auto elapsed = end - start;
+            const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+
+            std::chrono::steady_clock::duration sleep_time{};
+            if (elapsed > period) {
+                WARN_ONCE(
+                     std::string("Frame decoding step took ")
+                     + std::to_string(elapsed_ms)
+                     + " ms, which is longer than the target step size of "
+                     + std::to_string(constants::step_size * 1000.0)
+                     + " ms."
+                     );
+                sleep_time = std::chrono::steady_clock::duration::zero();
+            } else {
+                sleep_time = std::chrono::duration_cast<std::chrono::steady_clock::duration>(period - elapsed);
+            }
+            decoder_prof.end_frame();
+            std::this_thread::sleep_for(sleep_time);
+        }
+    });
+}
+
+#else
+
+void Map2D::startUpdatingObjectsPhysics_() {
+    physics_update_thread = std::thread([this]() {
+        const auto period = std::chrono::duration<float>(constants::step_size);
+        while (simulation_active_) {
+            auto start = std::chrono::steady_clock::now();
+
+            for (auto& obj : objects_) {
+                if (!objectOffMapTooLong_(obj.get())) {
+                    if (obj->isStarted()) {
+                        obj->update();
+                    } else {
+                        obj->freeze();
+                    }
+                }
+                else {
+                    removeObject_(std::move(obj));
+                }
+            }
+            updateWorld(start);
+            const auto end = std::chrono::steady_clock::now();
+            const auto elapsed = end - start;
+            const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+
+            std::chrono::steady_clock::duration sleep_time{};
+            if (elapsed > period) {
+                // Keep this cheap: avoid building big strings every frame.
+                // Use your logger's formatting instead of concatenation if you can.
+                WARN_ONCE(
+                     std::string("Update physics step step took ")
+                     + std::to_string(elapsed_ms)
+                     + " ms, which is longer than the target step size of "
+                     + std::to_string(constants::step_size * 1000.0)
+                     + " ms."
+                     );
+                sleep_time = std::chrono::steady_clock::duration::zero();
+            } else {
+                sleep_time = std::chrono::duration_cast<std::chrono::steady_clock::duration>(period - elapsed);
+            }
+            std::this_thread::sleep_for(sleep_time);
+
+        }
+    });
+}
+
+void Map2D::startFrameDecoderThread_() {
+    capture_frames_.clear();
+    simulation_active_ = true;
+    decoder_thread = std::thread([this]() {
+        unsigned int num_frames = 0;
+        const auto period = std::chrono::duration<float>(constants::step_size);
+        while (simulation_active_) {
+            if (num_frames > max_frames_stored_) {
+                logger().warn("Maximum number of frames stored reached: {}. Stopping simulation.", max_frames_stored_);
+                return;
+            }
+            auto start = std::chrono::steady_clock::now();
+            this->addMotionFrame();
+            const auto end = std::chrono::steady_clock::now();
+            const auto elapsed = end - start;
+            const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count();
+
+            std::chrono::steady_clock::duration sleep_time{};
+            if (elapsed > period) {
+                WARN_ONCE(
+                     std::string("Update physics step step took ")
+                     + std::to_string(elapsed_ms)
+                     + " ms, which is longer than the target step size of "
+                     + std::to_string(constants::step_size * 1000.0)
+                     + " ms."
+                     );
+                sleep_time = std::chrono::steady_clock::duration::zero();
+            } else {
+                sleep_time = std::chrono::duration_cast<std::chrono::steady_clock::duration>(period - elapsed);
+            }
+            std::this_thread::sleep_for(sleep_time);
+        }
+    });
+}
+#endif
+
+void Map2D::stopUpdatingObjectsPhysics_() {
+    if (physics_update_thread.joinable()) {
+        physics_update_thread.join();
+    }
+}
+
+void Map2D::startSimulation() {
+    if (simulation_active_) {
+        logger().warn("Simulation already active. Ending previous simulation.");
+        endSimulation();
+    }
+    startFrameDecoderThread_();
+    startUpdatingObjectsPhysics_();
+}
+
+void Map2D::stopDecoder_() {
+    if (decoder_thread.joinable()) {
+        decoder_thread.join();
+    }
 }
 
 void Map2D::initializeCachedFrame() const {
     if (frame_cache_valid_) return;
 
-    cached_original_frame_ = cv::Mat(height_, width_, CV_8UC3);
+    cached_original_frame_ = Frame(height_, width_, CV_8UC3);
     const auto bmp = toBmp();
 
     // TODO: parallelize with OpenMP
@@ -282,17 +440,10 @@ void Map2D::initializeCachedFrame() const {
     frame_cache_valid_ = true;
 }
 
-void Map2D::invalidateFrameCache() const {
-    frame_cache_valid_ = false;
-    snapshot_.clear();
-}
-
-void Map2D::addMotionFrame()
-{
-    if (!simulation_active_) return;
-
-    // Ensure cached frame is valid
+void Map2D::addMotionFrame() {
     initializeCachedFrame();
+    // expand the buffer if needed
+    ensureCaptureCapacityForNextPush_();
 
     // Copy the cached original frame
     cv::Mat frame = cached_original_frame_.clone();
@@ -300,9 +451,16 @@ void Map2D::addMotionFrame()
     // Stamp dynamic objects onto the frame
     stampObjectsOntoFrame_(frame);
 
-    std::vector<std::array<std::uint8_t, 3>> snapshot_bmp = utils::matToArrayVector(frame);
-    snapshot_ = bmpToCells(snapshot_bmp);
-    capture_frames_.push_back(std::move(frame));
+    if (cf_size_ >= cf_capacity_) {
+        throw std::runtime_error("Capture buffer overflow");
+    }
+    const size_t pos = cf_head_ + cf_size_;
+    capture_frames_[pos] = std::move(frame);
+    ++cf_size_;
+}
+
+void Map2D::invalidateFrameCache() const {
+    frame_cache_valid_ = false;
 }
 
 // New method: stamps all dynamic objects onto the given frame
@@ -335,17 +493,18 @@ void Map2D::stampObjectsOntoFrame_(cv::Mat& frame) const
 
 void Map2D::endSimulation() {
     simulation_active_ = false;
-    if (simulation_thread_.joinable()) simulation_thread_.join();
-    if (capture_frames_.empty()) return;
+    stopDecoder_();
+    stopUpdatingObjectsPhysics_();
 }
 
-void Map2D::addMotionFrame(const cv::Mat& annotated)
+void Map2D::addMotionFrame(const Frame &annotated)
 {
-    if (!simulation_active_) {
-        throw std::runtime_error("Motion capture is not active. Call startMotionCapture() first.");
-    };
-
-    capture_frames_.push_back(annotated.clone());
+    initializeCachedFrame();
+    // expand the buffer if needed
+    ensureCaptureCapacityForNextPush_();
+    const size_t pos = cf_head_ + cf_size_;
+    capture_frames_[pos] = std::move(annotated);
+    ++cf_size_;
 }
 
 void Map2D::flushFrames(const std::string& filename)
@@ -413,7 +572,7 @@ bool Map2D::objectIsInMap_( MapObject* obj) const
 
     const cv::Rect frame(0, 0, width_, height_);
     const cv::Rect bb   = cv::boundingRect(std::vector<cv::Point>(poly.begin(), poly.end()));
-    return ( (bb & frame).area() > 0 );
+    return (bb & frame).area() > 0;
 }
 
 void Map2D::removeObject_(std::unique_ptr<MapObject> obj)
@@ -435,13 +594,15 @@ void Map2D::removeObject_(std::unique_ptr<MapObject> obj)
 
     if (it != objects_.end()) {
         objects_.erase(it);
+        // obj will be automatically deleted when unique_ptr goes out of scope
+        logger().debug("Removed object {} from map.", static_cast<const void*>(obj.get()));
     }
-
-    // obj will be automatically deleted when unique_ptr goes out of scope
-    logger().debug("Removed object {} from map.", static_cast<const void*>(obj.get()));
 }
 
-bool Map2D::objectIsRemoved_(MapObject* obj) {
+bool Map2D::objectOffMapTooLong_(MapObject* obj) {
+    if (obj == nullptr) {
+        return false;
+    }
     if ( objectIsInMap_(obj)) {
         offmap_time_.erase(obj);
         return false;
@@ -456,19 +617,7 @@ bool Map2D::objectIsRemoved_(MapObject* obj) {
     }
     const float dt = std::chrono::duration_cast<std::chrono::duration<float>>(now - it->second).count();
     if (dt >= constants::max_offmap_time) {
-        // Find the object in the vector and remove it
-        auto obj_it = std::find_if(objects_.begin(), objects_.end(),
-            [obj](const std::unique_ptr<MapObject>& ptr) {
-                return ptr.get() == obj;
-            });
-
-        if (obj_it != objects_.end()) {
-            auto obj_to_remove = std::move(*obj_it);
-            removeObject_(std::move(obj_to_remove));
-        }
-
-        logger().info("Object {} removed after being off-map for {:.1f} seconds.", static_cast<const void*>(obj), dt);
-        return true;
+        return true; // signal to remove
     }
     return false;
 }
@@ -486,4 +635,232 @@ void Map2D::destroyAllDynamicObjects() {
         }
     }
     invalidateFrameCache();
+}
+
+void Map2D::ensureCaptureCapacityForNextPush_()
+{
+    // Initial setup: allocate first chunk of slots.
+    if (cf_capacity_ == 0) {
+        cf_capacity_ = std::min(max_frames_stored_, cf_chunk_);
+        capture_frames_.resize(cf_capacity_);  // default-constructed cv::Mat slots
+        cf_head_ = 0;
+        cf_size_ = 0;
+        return;
+    }
+
+    // Still have a free slot? nothing to do.
+    if (cf_size_ < cf_capacity_) return;
+
+    // Full: try to grow if we can.
+    if (cf_capacity_ < max_frames_stored_) {
+        // Geometric growth (at least +cf_chunk_), clamped to max_frames_stored_.
+        size_t proposed = std::max(cf_capacity_ * 2, cf_capacity_ + cf_chunk_);
+        size_t new_cap  = std::min(proposed, max_frames_stored_);
+
+        // Fast path: already linear [0..cf_size_)
+        if (cf_head_ == 0) {
+            // Reserve first to reduce chances of reallocation; then resize to create new slots.
+            capture_frames_.reserve(new_cap);
+            capture_frames_.resize(new_cap);
+            cf_capacity_ = new_cap;
+            return;
+        }
+
+        // General path: ring is split into two linear segments.
+        // Build a new storage, move in two ranges, then pad to new_cap.
+        std::vector<cv::Mat> newStore;
+        newStore.reserve(new_cap);
+
+        // First segment: [cf_head_ .. cf_head_ + first)
+        const size_t first = std::min(cf_size_, cf_capacity_ - cf_head_);
+        newStore.insert(newStore.end(),
+                        std::make_move_iterator(capture_frames_.begin() + cf_head_),
+                        std::make_move_iterator(capture_frames_.begin() + cf_head_ + first));
+
+        // Second segment (if any): [0 .. second)
+        const size_t second = cf_size_ - first;
+        if (second) {
+            newStore.insert(newStore.end(),
+                            std::make_move_iterator(capture_frames_.begin()),
+                            std::make_move_iterator(capture_frames_.begin() + second));
+        }
+
+        // Pad with empty slots to reach new_cap (keeps index-by-slot semantics).
+        newStore.resize(new_cap);
+
+        capture_frames_.swap(newStore);
+        cf_capacity_ = new_cap;
+        cf_head_     = 0;          // now linearized
+        // cf_size_ unchanged
+    }
+}
+
+
+void Map2D::buildGraph_() {
+    resetGraphStorage_();
+    const auto roads = collectRoads_();
+    if (roads.empty()) return;
+
+    std::unordered_map<Road*, std::vector<int>> roadNodes;
+    addIntersectionNodes_(roads, roadNodes);
+    addEndpointNodes_(roads, roadNodes);
+    addEdgesAlongRoads_(roads, roadNodes);
+}
+
+void Map2D::resetGraphStorage_() {
+    global_graph_ = Graph<int>();
+    node_coords_.clear();
+}
+
+std::vector<Road*> Map2D::collectRoads_() const {
+    std::vector<Road*> out;
+    out.reserve(objects_.size());
+    for (auto& o : objects_) {
+        if (!dynamic_cast<Road*>(o.get())) continue;
+        out.push_back(static_cast<Road*>(o.get()));
+    }
+    return out;
+}
+
+int Map2D::addNode_(const b2Vec2& p) {
+    //tODO: return the existing node if p is very close to an existing node
+    int id = static_cast<int>(graph_nodes_.size());
+    std::string label = "lbl_id" + std::to_string(id);
+    auto new_node = std::make_unique<Node<int>>(label, id);
+    auto* node_ptr = new_node.get();
+    graph_nodes_.push_back(std::move(new_node));
+    node_coords_.push_back(p);
+    global_graph_.addNode(node_ptr);
+    return id;
+}
+
+std::array<b2Vec2,4> Map2D::roadCorners_(const Road* r) const {
+    const b2Vec2 C = r->position();
+    const float a = b2Rot_GetAngle(r->rotation());
+    const b2Vec2 d{std::cos(a), std::sin(a)};
+    const b2Vec2 n{-d.y, d.x};
+    const float L = r->length(), W = r->width();
+    return { C + 0.5f*L*d + 0.5f*W*n,
+             C + 0.5f*L*d - 0.5f*W*n,
+             C - 0.5f*L*d + 0.5f*W*n,
+             C - 0.5f*L*d - 0.5f*W*n };
+}
+
+bool Map2D::obbOverlap_(const std::array<b2Vec2,4>& A, const std::array<b2Vec2,4>& B) {
+    const auto axes = [&](){
+        std::array<b2Vec2,4> ax;
+        ax[0] = {A[0].x - A[1].x, A[0].y - A[1].y};
+        ax[1] = {A[0].x - A[2].x, A[0].y - A[2].y};
+        ax[2] = {B[0].x - B[1].x, B[0].y - B[1].y};
+        ax[3] = {B[0].x - B[2].x, B[0].y - B[2].y};
+        return ax;
+    }();
+    for (auto a : axes) {
+        const float len = std::hypot(a.x, a.y);
+        if (len < 1e-6f) continue;
+        a.x/=len; a.y/=len;
+        auto [m1, M1] = utils::projectMinMaxPolygon(A,a);
+        auto [m2, M2] = utils::projectMinMaxPolygon(B,a);
+        if (M1 < m2 - 1e-4f || M2 < m1 - 1e-4f) return false;
+    }
+    return true;
+}
+
+bool Map2D::centerlineCrossPoint_(const Road* r1, const Road* r2, b2Vec2& p) {
+    const b2Vec2 C1 = r1->position(), C2 = r2->position();
+    const float a1 = b2Rot_GetAngle(r1->rotation());
+    const float a2 = b2Rot_GetAngle(r2->rotation());
+    const b2Vec2 d1{std::cos(a1), std::sin(a1)};
+    const b2Vec2 d2{std::cos(a2), std::sin(a2)};
+    const float det = d1.x*d2.y - d1.y*d2.x;
+    if (std::fabs(det) < 1e-6f) return false;
+    const b2Vec2 dv = C2 - C1;
+    const float t = (dv.x*d2.y - dv.y*d2.x) / det;
+    const float u = (dv.x*d1.y - dv.y*d1.x) / det;
+    const float L1 = 0.5f * r1->length(), L2 = 0.5f * r2->length();
+    if (std::fabs(t) > L1 + 1e-3f || std::fabs(u) > L2 + 1e-3f) return false;
+    p = C1 + t*d1;
+    return true;
+}
+
+void Map2D::addIntersectionNodes_(
+    const std::vector<Road*>& roads,
+    std::unordered_map<Road*, std::vector<int>>& roadNodes)
+{
+    for (size_t i=0;i<roads.size();++i){
+        auto r1 = roads[i];
+        const auto c1 = roadCorners_(r1);
+        for (size_t j=i+1;j<roads.size();++j){
+            auto r2 = roads[j];
+            const auto c2 = roadCorners_(r2);
+            if (!obbOverlap_(c1,c2)) continue;
+            b2Vec2 P;
+            if (!centerlineCrossPoint_(r1,r2,P)) {
+                // fallback: use nearer endpoint as junction
+                const b2Vec2 C1=r1->position(), C2=r2->position();
+                const b2Vec2 d1 = c1[0]; (void)d1; // hint: corners already imply overlap
+                P = 0.5f*(C1+C2);
+            }
+            const int nid = addNode_(P);
+            roadNodes[r1].push_back(nid);
+            roadNodes[r2].push_back(nid);
+        }
+    }
+}
+
+void Map2D::addEndpointNodes_(
+    const std::vector<Road *> &roads,
+    std::unordered_map<Road *, std::vector<int> > &roadNodes) {
+    for (auto *r: roads) {
+        auto it = roadNodes.find(r);
+        const bool hasAny = (it != roadNodes.end() && !it->second.empty());
+        const b2Vec2 C = r->position();
+        const float a = b2Rot_GetAngle(r->rotation());
+        const b2Vec2 d{std::cos(a), std::sin(a)};
+        const b2Vec2 e1 = C + 0.5f * r->length() * d;
+        const b2Vec2 e2 = C - 0.5f * r->length() * d;
+
+        if (!hasAny) {
+            roadNodes[r] = {addNode_(e1), addNode_(e2)};
+            continue;
+        }
+        if (roadNodes[r].size() == 1) {
+            const b2Vec2 ex = node_coords_[roadNodes[r][0]];
+            const b2Vec2 cand = (b2Distance(ex, e1) > b2Distance(ex, e2)) ? e1 : e2;
+            roadNodes[r].push_back(addNode_(cand));
+        }
+    }
+}
+
+void Map2D::addEdgesAlongRoads_(
+    const std::vector<Road *> &roads,
+    const std::unordered_map<Road *, std::vector<int> > &roadNodes) {
+    for (auto *r: roads) {
+        auto it = roadNodes.find(r);
+        if (it == roadNodes.end() || it->second.size() < 2) continue;
+
+        auto ids = it->second;
+        const b2Vec2 C = r->position();
+        const float a = b2Rot_GetAngle(r->rotation());
+        const b2Vec2 d{std::cos(a), std::sin(a)};
+        std::sort(ids.begin(), ids.end(), [&](int A, int B) {
+            const float ta = b2Dot(node_coords_[A] - C, d);
+            const float tb = b2Dot(node_coords_[B] - C, d);
+            return ta < tb;
+        });
+        for (size_t k = 1; k < ids.size(); ++k) {
+            const int u = ids[k - 1], v = ids[k];
+            Node<int>* node1 = graph_nodes_[u].get();
+            Node<int>* node2 = graph_nodes_[v].get();
+            std::pair node_pair_12 = {node1, node2};
+            std::pair node_pair_21 = {node2, node1};
+            CXXGraph::id_t edge_id = graph_edges_.size();
+            auto edge_12 = std::make_unique<Edge<int>>(edge_id, node_pair_12);
+            auto edge_21 = std::make_unique<Edge<int>>(edge_id, node_pair_21);
+            global_graph_.addEdge(edge_12.get());
+            global_graph_.addEdge(edge_21.get());
+            graph_edges_.push_back(std::move(edge_12));
+            graph_edges_.push_back(std::move(edge_21));
+        }
+    }
 }

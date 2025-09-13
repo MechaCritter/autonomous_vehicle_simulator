@@ -8,9 +8,9 @@
 
 namespace constants {
     // FPS for map updates
-    inline constexpr int FPS = 45; // Frames / second
+    inline constexpr int FPS = 30; // Frames / second
     inline constexpr float step_size = 1.0f / FPS; // seconds
-    inline constexpr int max_offmap_time = 60; // seconds
+    inline constexpr int max_offmap_time = 10; // 60 secs
     inline constexpr float vehicle_density = 200.0f ; // kg/m^2
     inline constexpr float max_vehicle_speed = 60.0f; // m/s
     inline constexpr float g = -9.81f; // m/s^2

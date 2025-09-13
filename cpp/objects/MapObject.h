@@ -130,11 +130,14 @@ public:
     [[nodiscard]] b2Filter bodyFilter() const noexcept {
         return b2Shape_GetFilter(body_descriptor_.shapeId);
     }
+    [[nodiscard]] std::chrono::steady_clock::time_point lastUpdated() const noexcept {
+        return last_updated_;
+    }
 
     /**
      * @brief Allows the object to be started updating its position continuously.
      */
-    void start() noexcept { started_ = true; }
+    void startUpdating() noexcept { started_ = true; }
 
     /**
      * @brief Stops the object from updating its position.
@@ -206,6 +209,7 @@ protected:
     float length_; ///< Length of the object in meters
     float width_;  ///< Width of the object in meters
     Map2D* map_{nullptr}; ///< Pointer to the map this object is attached to
+    std::chrono::steady_clock::time_point last_updated_;  ///< Track last update
 };
 
 

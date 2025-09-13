@@ -24,13 +24,11 @@ public:
      * distance to it.
      *
      * @param rel_angle Relative angle to the lidar's pose in radians. The zero point is the middle point of the fov.
-     * @param map The map to cast the ray on.
-     * @param cells Optional vector to store the cells that the ray passes through.
      *
      * @return double Distance to the first obstacle in meters. NOTE: in METERS, not pixels!
      */
     [[nodiscard]]
-    double castRay(double rel_angle, const Map2D& map, std::vector<std::pair<int,int>>* cells=nullptr) const;
+    double castRay(double rel_angle) const;
 
     // Override the generateData function from Sensor.
     [[nodiscard]] std::unique_ptr<sensor_data::SensorData> generateData() override;
