@@ -6,6 +6,8 @@
 #ifndef CONSTANTS_H
 #define CONSTANTS_H
 
+#include <box2d/box2d.h>
+
 namespace constants {
     // FPS for map updates
     inline constexpr int FPS = 30; // Frames / second
@@ -18,6 +20,8 @@ namespace constants {
     inline constexpr float linear_damping = 0.2f;  ///< simulates friction / drag
     inline constexpr float angular_damping = 0.2f; ///< simulates rotational friction / drag
     inline constexpr float vehicle_road_friction = 1.0f;
+    inline constexpr b2Vec2 unit_x = {1.0f, 0.0f};
+    inline constexpr b2Vec2 unit_y = {0.0f, 1.0f};
 }
 
 #endif //CONSTANTS_H

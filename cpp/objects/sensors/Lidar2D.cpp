@@ -1,12 +1,11 @@
 #include "Lidar2D.h"
-#include "../utils/utils.h"
+#include "../utils/ImageUtils.hpp"
 #include <chrono>
 #include <filesystem>
 #include <sstream>
 #include <stdexcept>
 #include <cmath>
 #include <vector>
-#include <iostream>
 
 // constants
 std::filesystem::path lidar_debug_path = "/home/critter/workspace/autonomous_vehicle_simulator/cpp/tests/debug";

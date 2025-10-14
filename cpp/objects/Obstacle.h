@@ -1,6 +1,6 @@
 #pragma once
 #include "../objects/MapObject.h"
-#include "utils/logging.h"
+#include "utils/LoggingUtils.hpp"
 
 class Obstacle final : public MapObject {
 public:

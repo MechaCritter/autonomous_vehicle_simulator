@@ -1,9 +1,4 @@
-//
-// Created by vunha on 4/20/2025.
-//
-
-#ifndef UTILS_H
-#define UTILS_H
+#pragma once
 
 #include <string>
 #include <iostream>
@@ -137,25 +132,4 @@ namespace utils {
 
         return pixels;
     }
-
-    /**
-    *  @brief Finds the scalar interval [mn, mx] of a convex polygon projected onto
-    *  the given axis.
-    * @detail for each point p in pts, compute the dot product p·axis and track the min and max values.
-    *
-    * @note the axis should be normalized (unit length) for correct results.
-    *
-    * @returns A pair {mn, mx} representing the projection interval.
-    */
-    inline std::pair<float, float> projectMinMaxPolygon(const std::array<b2Vec2,4>& pts, const b2Vec2& axis){
-        float mn = std::numeric_limits<float>::infinity();
-        float mx = -mn;
-        for (const auto&[x, y]: pts) {
-            const float v = x*axis.x + y*axis.y;
-            mn = std::min(mn, v); mx = std::max(mx, v);
-        }
-        return {mn, mx};
-    }
-} // namespace utils
-
-#endif //UTILS_H
+}

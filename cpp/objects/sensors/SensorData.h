@@ -28,23 +28,23 @@ struct Header {
 };
 
 struct LidarScan2D {
-    double angle_min_{0.0};
-    double angle_increment_{0.0};
-    double max_range_{0.0};
-    std::vector<double> ranges_;
+    float angle_min_{0.0};
+    float angle_increment_{0.0};
+    float max_range_{0.0};
+    std::vector<float> ranges_;
 
     // Protobuf-like setters for compatibility
-    void set_angle_min(double v) { angle_min_ = v; }
-    void set_angle_increment(double v) { angle_increment_ = v; }
-    void set_max_range(double v) { max_range_ = v; }
-    void add_ranges(double v) { ranges_.push_back(v); }
+    void set_angle_min(float v) { angle_min_ = v; }
+    void set_angle_increment(float v) { angle_increment_ = v; }
+    void set_max_range(float v) { max_range_ = v; }
+    void add_ranges(float v) { ranges_.push_back(v); }
 
     // Protobuf-like getters for compatibility
-    double angle_min() const { return angle_min_; }
-    double angle_increment() const { return angle_increment_; }
-    double max_range() const { return max_range_; }
+    float angle_min() const { return angle_min_; }
+    float angle_increment() const { return angle_increment_; }
+    float max_range() const { return max_range_; }
     int ranges_size() const { return static_cast<int>(ranges_.size()); }
-    double ranges(int i) const { return ranges_[static_cast<size_t>(i)]; }
+    float ranges(int i) const { return ranges_[static_cast<size_t>(i)]; }
 };
 
 struct SensorData {

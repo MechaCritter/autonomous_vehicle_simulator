@@ -2,7 +2,7 @@
 #define VEHICLE_SIMULATOR_GRASS_H
 
 #include "../objects/MapObject.h"
-#include "../utils/logging.h"
+#include "../utils/LoggingUtils.hpp"
 
 /**
  * @brief Static grass patch. Stamps Cell::Grass into the base map and does not participate in collisions.

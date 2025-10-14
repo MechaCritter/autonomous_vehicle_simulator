@@ -2,14 +2,17 @@
 #define VEHICLE_H
 
 #include "../MapObject.h"
-#include "../../utils/logging.h"
+#include "../../utils/LoggingUtils.hpp"
 #include "../../data/constants.h"
 #include <../objects/vehicle/PIDController.h>
+#include <../include/CXXGraph/CXXGraph.hpp>
+#include <../utils/GraphUtils.hpp>
 #include <array>
 #include <algorithm>
 #include <cmath>
 #include <vector>
 #include <memory>
+#include <expected>
 #include <limits>
 #include <box2d/box2d.h>
 
@@ -19,7 +22,7 @@ class Sensor;
 class Map2D;
 
 /**
- * @note the vehicle owns its own sensors instead of transfering to the map! so destroying the
+ * @note the vehicle owns its own sensors instead of transferring to the map! so destroying the
  * vehicle also destroys the sensors.
  */
 class Vehicle final : public MapObject {
@@ -57,7 +60,14 @@ public:
     [[nodiscard]] b2Vec2 velocityVector() const noexcept {
         return b2Body_GetLinearVelocity(body_descriptor_.bodyId);
     }
-    [[nodiscard]] float speed() const { return b2Length(velocityVector()); }
+    // gets magnitude of velocity vector
+    [[nodiscard]] float absoluteSpeed() const { return b2Length(velocityVector()); }
+    // gets projection of velocity onto forward axis
+    [[nodiscard]] float forwardSpeed() const noexcept {
+        const b2Vec2 v = velocityVector();
+        const b2Vec2 fwd = b2Body_GetWorldVector(body_descriptor_.bodyId, constants::unit_x);
+        return b2Dot(v, fwd);
+    }
     [[nodiscard]] const std::vector<std::unique_ptr<Sensor>>& sensors() const noexcept {
         return sensors_;
     }
@@ -71,16 +81,38 @@ public:
     {
         return color_bgr_;
     }
+    [[nodiscard]] float desiredSpeed() const { return desired_speed_; }
     [[nodiscard]] Mode mode() const noexcept { return mode_; }
     [[nodiscard]] float brakeForce() const noexcept { return brake_force_; }
     // Setters
-    // control variables
+    /**
+     * @brief sets the speed of the vehicle to this speed immediately, clamped to the maximum allowed.
+     *
+     * @note This is a "hard" set, bypassing the PID controller. Use with caution
+     * @param speed
+     */
     void setSpeed(float speed) const {
-        speed = std::clamp(speed, -max_speed_, max_speed_);
+        if (speed < 0.0f) {
+            throw std::invalid_argument("Speed must be non-negative.");
+        }
+        speed = std::clamp(speed, 0.0f, max_speed_);
         const b2Vec2 vel_relative = { speed * std::cos(steering_angle_),
                              speed * std::sin(steering_angle_) };
         const b2Vec2 vel_world = b2Body_GetWorldVector(body_descriptor_.bodyId, vel_relative);
         b2Body_SetLinearVelocity(body_descriptor_.bodyId, vel_world);
+    }
+
+    /**
+     * @brief Set the desired absolute speed of the vehicle, clamped to the maximum allowed. The
+     * PID controller will then work its way to achieve this speed.
+     *
+     * @param speed Desired speed in m/s (non-negative).
+     */
+    void setDesiredAbsoulteSpeed(float speed) {
+        if (speed < 0.0f) {
+            throw std::invalid_argument("Desired speed must be non-negative.");
+        }
+        desired_speed_ = std::clamp(speed, 0.0f, max_speed_);
     }
 
     /**
@@ -102,6 +134,23 @@ public:
      * @param color_bgr BGR color array.
      */
     void setColor(const std::array<uint8_t,3> color_bgr) { color_bgr_ = color_bgr; }
+
+    /**
+     * @brief disables the controller. Afterwards, the vehicle will use open-loop
+     * control and just follow the current steering angle and motor force.
+     */
+    void disableController() {
+        follow_controller_ = false;
+    }
+
+    /**
+     * @brief enables the controller. Afterwards, the vehicle will try to follow the
+     * local path if found.
+     */
+    void enableController() {
+        follow_controller_ = true;
+    }
+
 
     /**
      * @brief Set the mode to Rest. The velocity is set to zero immediately, and
@@ -149,8 +198,8 @@ public:
      * steering angle.
      *
      * The update depends on the vehicle's current mode:
-     * - Drive: Follows the global path using a PID controller for steering and speed.
-     *          If no path is set, switches to Brake mode.
+     * - Drive: when controller is enabled, follows the global path using a PID controller for steering and speed.
+     *          If no path is set, switches to Brake mode. Else, applies current motor force and steering angle (open-loop).
      * - Rest:  Immediately stops the vehicle and sets steering and motor force to zero.
      * - Brake: Applies the stored braking force (always negative) to decelerate.
      */
@@ -180,12 +229,30 @@ public:
     void setMap(Map2D *map) override;
 
     /**
+     * @brief starts the vehicle to allow it to be updated.
+     *
+     * @note if the desired speed is 0.0 upon initializing, it
+     * will be set to the max allowed speed.
+     */
+    void startUpdating() noexcept override {
+        if (desired_speed_ == 0.0f) {
+            desired_speed_ = max_speed_;
+        }
+        MapObject::startUpdating();
+    }
+
+    /**
      * @brief Sets the global waypoint for the vehicle to go. Each point
      * in the vector is a node in world coordinates (meters).
      */
     void setGlobalPath(const std::vector<b2Vec2>& path) {
         if (path.size() < 2) {
-            logger().warn("Global path should contain at least 2 waypoints (start and target).");
+            throw std::invalid_argument("Path must contain at least two waypoints.");
+        }
+
+        if (path.size() < 3) {
+            logger().warn("Path contains only two waypoints. Consider adding intermediate waypoints "
+                          "for better path following.");
         }
         global_path_ = path;
         if (!global_path_.empty()) {
@@ -220,10 +287,13 @@ private:
     std::array<uint8_t,3> color_bgr_;   ///< BGR
     float motor_force_{0.0f};           ///< N
     float max_motor_force_{0.0f};       ///< N, computed as mass * g
+    float max_brake_force_{0.0f};       ///< N, computed as 4 * mass * g
+    float desired_speed_{0.0f};    ///< m/s
     float max_speed_{constants::max_vehicle_speed}; ///< m/s
     float yaw_rate_{0.0f};              ///< rad/s
     float steering_angle_ {0.0f};       ///< rad
     float max_steering_angle_ {M_PI/3};   ///< rad
+    bool follow_controller_{true}; ///< whether to use the PID controller for path following. Otherwise, vehicle will go straight.
     std::vector<Mount> mounts_;
     PIDController pid_controller_;          ///< PID controller for path following
     std::vector<b2Vec2> global_path_;       ///< Sequence of waypoints (world coordinates) for global route
@@ -248,7 +318,7 @@ private:
      *
      * @note this method is used for local, not global path planning.
      */
-    std::vector<b2Vec2> findBestPath();
+    std::expected<std::vector<b2Vec2>, std::string> findBestPath_();
 
     /**
      * @brief notifies the box2d world about the current motor force and steering angle
@@ -256,6 +326,113 @@ private:
      */
     void notifyBox2DWorld_() const;
 
+    /**
+     * @brief Contains tunable metrics for the local lattice planner.
+     *
+     *  @param graph_data: the current graph data used for the next time step
+     * @param horizon_m: how far ahead (in meters) to plan locally along the global path.
+     * The larger, the more foresight, but also the more branching and hence more compute time.
+     * @param samples_along_edge_: how many discrete samples of the OBB to create along
+     * each edge. The larger, the more accurate collision checking, but also more compute time. If
+     * all samples are clear, the edge is considered clear.
+     * @param step_m: longitudinal spacing betwen successive layers in the lattice.
+     * @param nodes_per_step: how many lateral candidates per layer.
+     * @param lateral_spacing_m: lateral offset (in meters) between adjacent candidats in a
+     * layer.
+     * @param min_distance_between_nodes_: if two nodes are closer than this threshold,
+     * they are considered the same.
+     */
+    struct LatticeConfig {
+        GraphData *graph_data{};
+        unsigned int samples_along_edge_{8};
+        float horizon_m{20.0f};
+        float step_m{5.0f};
+        int   nodes_per_step{5};
+        float lateral_spacing_m{5.0f};
+        float min_distance_between_nodes_{1.0f};
+    };
+
+    LatticeConfig lattice_config_{};  // per-build lattice config with a fresh graph
+
+    /**
+     * @brief Picks the local planning segment `[start, end]` along the global path.
+     *
+     * @details The code does followins steps:
+     * 1. Walk the global path segments and accumulate distance until the next segment would
+     * exceed the horizon distance.
+     * 2. Interpolate within that segment to get the end point.
+     *
+     *  @note If two nodes are closer than `min_distance_between_nodes_`, the method will jump
+     *  to the next node to avoid the vehicle driving back to the previous node.
+     *
+     * @return pair `[start, end]` where `start` is the vehicle's current position,
+     * and `end` is a point along the global path.
+     */
+    [[nodiscard]] std::pair<b2Vec2,b2Vec2> computeHorizon_() const;
+
+    /**
+     * @brief Builds a lattice graph between start and end points, according to the given config.
+     * The graph nodes are stored in `g`, and the last layer of nodes is returned in `lastLayer`.
+     *
+     * @details THis transforms continuous local motion into a small discrere search problem.
+     * @note currently, the edge weights depend solely on distance.
+     *
+     * @param start Starting point of the lattice (vehicle position).
+     * @param end   End point of the lattice (along global path).
+     * @param lastLayer Output vector of vertex IDs created in the final layer.
+     */
+    int buildLattice_(const b2Vec2& start,
+                        const b2Vec2& end,
+                       std::vector<int>& lastLayer);
+
+    /**
+     * @brief Does collision check to select candidate edges for the motion planner using
+     * OBB sweep of the vehicle.
+     *
+     * @details Does an occupancy test along the selected edge by sampling `samples_along_edge_`
+     * OBBs along the edge. If all samples are collision-free, the edge is considered clear.
+     *
+     * @param a the start point of the edge
+     * @param b the end point of the edge
+     * @return true if the edge is collision-free, false otherwise.
+     */
+    [[nodiscard]] bool edgeCollisionFree_(const b2Vec2& a, const b2Vec2& b) const;
+
+    /**
+     * @brief choose which node in the final layer should be aimed for.
+     *
+     * @detail currently, picks the node whose world position is closest to the
+     * end point from the horizon cut.
+     * @param startNodeId the id of the starting node, from which the distances to each
+     * node in the last layer are computed
+     * @param lastLayer the vector of node ids in the last layer of the lattice
+     * @return the id of the chosen target node
+     */
+    [[nodiscard]] int chooseTargetNode_(
+        unsigned int startNodeId,
+        const std::vector<int>& lastLayer) const;
+
+    /**
+     * @brief turn the sequence of node IDs from Dijkstra into world waypoints for the controller.
+     * @param path vector of node IDs from Dijkstra
+     * @return
+     */
+    [[nodiscard]] std::vector<b2Vec2> reconstructLocalPath_(
+        const std::vector<std::string>& path) const;
+
+    /**
+     * @brief Remove waypoints that are already behind the vehicle.
+     * Projects the current pose P onto the *next* path segment [B=global_path_[1], C=global_path_[2]].
+     * If P is ahead of B along B→C (t>0) and either the lateral error is small or P is near B,
+     * drop B. Repeats until the next waypoint is forward-progressing.
+     *
+     * Edge cases:
+     *  - If only [P, B] remain (size==2), drop B when P is within a reach radius.
+     *  - Degenerate segments (|C-B| ≈ 0) are collapsed by dropping B.
+     *
+     * @note if the final waypoint is reached, brake mode is engaged.
+     */
+    void prunePassedWaypoints_();
 };
 
 #endif // VEHICLE_H

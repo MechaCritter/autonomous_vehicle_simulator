@@ -137,7 +137,7 @@ public:
     /**
      * @brief Allows the object to be started updating its position continuously.
      */
-    void startUpdating() noexcept { started_ = true; }
+    virtual void startUpdating() noexcept { started_ = true; }
 
     /**
      * @brief Stops the object from updating its position.

@@ -11,12 +11,14 @@
 #include <mutex>
 #include <condition_variable>
 #include "../data/DataClasses.h"
-#include "../utils/utils.h"
-#include "../utils/logging.h"
+#include "../utils/GraphUtils.hpp"
+#include "../utils/LoggingUtils.hpp"
+#include "../utils/ImageUtils.hpp"
 #include "../objects/MapObject.h"
 
 
 constexpr int MAX_MAP_WIDTH = 2000;
+constexpr int MAX_FRAMES_STORED = 100000; // max number of frames to store in memory for video capture
 constexpr int MAX_MAP_HEIGHT = 2000;
 constexpr double DEFAULT_MAP_RESOLUTION = 0.1; // meters/pixel
 // const std::string DEFAULT_MAP_FILE = "../../res/maps/default_map.bmp"; // TODO: find a way to make relative path to work again
@@ -128,15 +130,20 @@ public:
     [[nodiscard]] const std::vector<std::unique_ptr<MapObject>>& objects() const noexcept { return objects_; }
     [[nodiscard]] unsigned int maxFrameStored() const noexcept { return max_frames_stored_; }
     [[nodiscard]] bool simulationActive() const noexcept { return simulation_active_; }
-    [[nodiscard]] std::vector<Cell> snapshot() const {
+    [[nodiscard]] std::vector<Cell> snapshot() {
         initializeCachedFrame();
         Frame frame = cached_original_frame_.clone();
-        stampObjectsOntoFrame_(frame);
+        stampAllDynamicObjectsOntoFrame_(frame);
         return bmpToCells(utils::matToArrayVector(frame));
     }
-    /** @return road-network graph (nodes: intersections/endpoints; edges: road segments) */
-    Graph<int>& graph() { return global_graph_; }
-    const Graph<int>& graph() const { return global_graph_; }
+    [[nodiscard]] int curentFrameIndex() const {return cap_frame_head_ + cap_frame_size_;}
+    [[nodiscard]] Frame currentFrame() {
+        if (capture_frames_.empty()) {
+            logger().warn("No frames captured yet. Returning the original map frame.");
+            return cached_original_frame_;
+        }
+        return capture_frames_[cap_frame_head_ + cap_frame_size_];
+    }
     /** Return a raw pointer to the cell at (x,y).  *No bounds check*. */
     Cell* cellPtr(int x, int y) { return &map_data_[idx(x,y)]; }
 
@@ -296,19 +303,13 @@ public:
      */
     [[nodiscard]] std::pair<int, int> worldToCell(float world_x, float world_y) const;
 
-    /** @return immutable node coordinates (world meters) */
-    [[nodiscard]] const std::vector<b2Vec2>& nodeCoords() const { return node_coords_; }
-
-    /** @return the nodes in the graph */
-    [[nodiscard]] const std::vector<std::unique_ptr<Node<int>>>& graphNodes() const { return graph_nodes_; }
-
-    /** @return the edges in the graph */
-    [[nodiscard]] const std::vector<std::unique_ptr<Edge<int>>>& graphEdges() const { return graph_edges_; }
+    /** @return the graph data of the map */
+    [[nodiscard]] GraphData& graphData() { return graph_data_; }
 private:
-    size_t cf_head_ = 0; // index of logical front
-    size_t cf_size_ = 0; // number of valid frames in buffer
-    size_t cf_chunk_ = 0; // size of one growth chunk
-    size_t cf_capacity_ = 0; // current allocated capacity
+    size_t cap_frame_head_ = 0; // index of logical front
+    size_t cap_frame_size_ = 0; // number of valid frames in buffer
+    size_t cap_frame_chunk_ = 0; // size of one growth chunk
+    size_t cap_frame_capacity_ = 0; // current allocated capacity
 
     /**
      * @brief Ensure the ring has capacity for +1 push. Grows by 1/10 of max_frames_stored_ if needed.
@@ -353,10 +354,8 @@ private:
         static std::shared_ptr<spdlog::logger> logger_ = utils::getLogger("Map2D");
         return *logger_;
     }
-    Graph<int> global_graph_;
-    std::vector<std::unique_ptr<Node<int>>> graph_nodes_; // maps node coordinates to node pointers
-    std::vector<std::unique_ptr<Edge<int>>> graph_edges_; // all edges in the graph
-    std::vector<b2Vec2> node_coords_; // node coordinates in world meters
+    GraphData graph_data_;
+
     /**
      * @brief tracks how long each object has been off-map. After MAX_OFFMAX_TIME seconds,
      * the object will be destroyed and de-registered from the map.
@@ -364,7 +363,7 @@ private:
     std::unordered_map<MapObject*, std::chrono::steady_clock::time_point> offmap_time_;
     bool simulation_active_{false};
     std::vector<Frame> capture_frames_;
-    size_t max_frames_stored_{100000};
+    size_t max_frames_stored_{MAX_FRAMES_STORED};
 
     // Cache for the original frame without dynamic objects
     mutable Frame cached_original_frame_;
@@ -373,7 +372,6 @@ private:
     /** Initialize or refresh the cached original frame */
     void initializeCachedFrame() const;
 
-    /// Grow capture buffer capacity in +10% of max-frames chunks when needed.
     /**
      * Invalidate the cached frame (call when static map data changes)
      * @note also clears the snapshot.
@@ -381,11 +379,19 @@ private:
     void invalidateFrameCache() const;
 
     /**
-     * @brief Rasterize a (convex) object polygon directly into map_data_ with its
-     * Cell type.
-     * @note Only use on static objects that do not move!!!
+     * @brief Rasterize a (convex) static object polygon directly into map_data_ with its
+     * Cell type and invalidate the cached frame.
+     * @note This method overwrites the cached_original_frame_ directly!
      */
-    void stampObject(const std::unique_ptr<MapObject>& object);
+    void stampStaticObject_(const std::unique_ptr<MapObject>& object);
+
+    /**
+     * @brief stamps all dynamic objects onto the frame.
+     *
+     * @note this method was made to avoid stamping static objects onto the frame
+     * while simulating because static objects never move anyway.
+     */
+    void stampAllDynamicObjectsOntoFrame_(Frame& frame);
 
     /**
      * @brief Remove object from this map and destroy its Box2D body
@@ -445,11 +451,12 @@ private:
     void fillMapWith(Cell cell);
 
     /**
-     * @brief Stamps all dynamic objects onto the given frame.
+     * @brief Stamps the given object directly onto the given frame and
+     * overwrite the current map cell data.
      *
      * @param frame The frame to stamp objects onto.
      */
-    void stampObjectsOntoFrame_(Frame& frame) const;
+    void stampObjectOntoFrame_(const std::unique_ptr<MapObject>& obj, Frame& frame);
 
     /**
      * @brief Rebuild road graph
@@ -516,7 +523,7 @@ private:
      * Add a node to the global graph at the given world coordinates.
      *
      * @param p: world coordinates in meters
-     * @return
+     * @return the id of the newly inserted node
      */
     int  addNode_(const b2Vec2& p);
 };

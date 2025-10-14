@@ -50,7 +50,7 @@ TEST(Vehicle, StopsOnRoadDueToFriction)
 
     while (std::chrono::steady_clock::now() - start_time < target_duration) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
-        float current_speed = car_ptr->speed();
+        float current_speed = car_ptr->absoluteSpeed();
         auto speed_vec = car_ptr->velocityVector();
         auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::steady_clock::now() - start_time
@@ -64,7 +64,7 @@ TEST(Vehicle, StopsOnRoadDueToFriction)
 
     map.flushFrames(videoFile.string());
     // the vehicle should halt due to friction within 10s
-    float speed = car_ptr->speed();
+    float speed = car_ptr->absoluteSpeed();
 
     EXPECT_NEAR(speed, 0.0f, 0.001f); // allow small tolerance
     destroyWorld();
@@ -72,7 +72,7 @@ TEST(Vehicle, StopsOnRoadDueToFriction)
 
 /**
  * @brief in this test, two cars, each equipped with a LIDAR, should be able to detect each
- * other as they come close (<= 5m). After that distance, a brake force of -1000N is applied
+ * other as they come close (<= 20m). After that distance, a strong braking force is applied.
  *
  * This test expects both vehicles to brake and eventually stop before colliding!
 */
@@ -80,7 +80,7 @@ TEST(Vehicle, StopWhenMeetingAnotherVehicle)
 {
     setupWorld();
     Map2D map(800, 800);
-
+    float lidar_max_range = 50.0f; // meters
     // Lay out a straight road band
     for (int i = 0; i < 15; i++) {
         auto road = std::make_unique<Road>(10, 10, 5.0f * i + 5.0f, 5.0f);
@@ -93,12 +93,18 @@ TEST(Vehicle, StopWhenMeetingAnotherVehicle)
          2.0f,
         std::array<uint8_t, 3>{255, 0, 255},
         0.0,
-        .0f,
+        20.0f,
         3.0f,
         5.0f,
         0.0f
     );
+    std::vector path_left = {
+        b2Vec2{3.0f, 5.0f},   // start
+        b2Vec2{95.0f, 5.0f}   // end
+    };
+    car_left->setGlobalPath(path_left);
     auto lidar_car_left = std::make_unique<Lidar2D>("lidar_left", "front", 60);
+    lidar_car_left->setMaxRange(lidar_max_range);
     lidar_car_left->setMap(&map);
     car_left->addSensor(std::move(lidar_car_left), Vehicle::MountSide::Front, 0.0f);
 
@@ -107,13 +113,18 @@ TEST(Vehicle, StopWhenMeetingAnotherVehicle)
         2.0f,
         std::array<uint8_t, 3>{255, 0, 255},
         M_PI,
-        0.0,
+        20.0,
         78.0f,
         5.0f,
         0.0f
     );
-
+    std::vector path_right = {
+        b2Vec2{78.0f, 5.0f},   // start
+        b2Vec2{3.0f, 5.0f}   // end
+    };
+    car_right->setGlobalPath(path_right);
     auto lidar_car_right = std::make_unique<Lidar2D>("lidar_right", "front", 60);
+    lidar_car_right->setMaxRange(lidar_max_range);
     lidar_car_right->setMap(&map);
     car_right->addSensor(std::move(lidar_car_right), Vehicle::MountSide::Front, 0.0f);
 
@@ -122,38 +133,36 @@ TEST(Vehicle, StopWhenMeetingAnotherVehicle)
     Vehicle* car_right_ptr = car_right.get();
     map.addObject(std::move(car_left));
     map.addObject(std::move(car_right));
-    car_left_ptr->setSpeed(35.0f);
-    car_right_ptr->setSpeed(35.0f);
     car_left_ptr->startUpdating();
     car_right_ptr->startUpdating();
 
     map.startSimulation();
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-
-    // Monitor speed for 10 seconds, printing every 1 second
+    car_left_ptr->setDesiredAbsoulteSpeed(40.0f);
+    car_right_ptr->setDesiredAbsoulteSpeed(40.0f);
+    // Monitor speed, printing every 0.1 second
     auto start_time = std::chrono::steady_clock::now();
-    auto target_duration = std::chrono::seconds(20);
+    auto target_duration = std::chrono::seconds(7);
 
     while (std::chrono::steady_clock::now() - start_time < target_duration) {
-        car_left_ptr->printPhysicalProperties();
+        // car_left_ptr->printPhysicalProperties();
         auto sensor_carleft_data = car_left_ptr->sensors()[0]->generateData();
         auto &scan_left = sensor_carleft_data->lidar_scan_2d();
         int idx_left = scan_left.ranges_size() / 2; // middle ray
         float dist_left = scan_left.ranges(idx_left);
-        if (dist_left <= 15.0f) {
+        if (dist_left <= std::clamp(25.0f, 0.0f, lidar_max_range)) {
             std::cout << "[GOOD] Distance: " << dist_left << " m <= 5.0f m => braking!\n";
-            car_left_ptr->setMotorForce(-10000.0f); // negative force => brake
+            car_left_ptr->brake(-20000); // negative force => brake
         }
 
-        car_right_ptr->printPhysicalProperties();
+        // car_right_ptr->printPhysicalProperties();
         auto sensor_carright_data = car_right_ptr->sensors()[0]->generateData();
         auto &scan_right = sensor_carright_data->lidar_scan_2d();
         int idx_right = scan_right.ranges_size() / 2; // middle ray
         float dist_right = scan_right.ranges(idx_right);
-        if (dist_right <= 10.0f) {
+        if (dist_right <= std::clamp(25.0f, 0.0f, lidar_max_range)) {
             std::cout << "[GOOD] Distance: " << dist_right << " m <= 5.0f m => braking!\n";
-            car_right_ptr->setMotorForce(-10000.0f); // negative force => brake
+            car_right_ptr->brake(-20000); // negative force => brake
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -164,6 +173,15 @@ TEST(Vehicle, StopWhenMeetingAnotherVehicle)
     std::filesystem::path videoFile = output_debug_path_testVehicle / "vehicle_stop_avoid_collision.mp4";
 
     map.flushFrames(videoFile.string());
+    // vehicle moves on the straight line and should stop before colliding
+    float speed_left = car_left_ptr->absoluteSpeed();
+    auto [xleft, yleft] = car_left_ptr->position();
+    float speed_right = car_right_ptr->absoluteSpeed();
+    auto [xright, yright] = car_right_ptr->position();
+    ASSERT_EQ(speed_left, 0.0f);
+    ASSERT_EQ(speed_right, 0.0f);
+    ASSERT_EQ(yleft, 5.0f);
+    ASSERT_EQ(yright, 5.0f);
     destroyWorld();
 }
 
@@ -257,9 +275,13 @@ TEST(Vehicle, RectangularPath) {
     // Plan route straight along the road
     std::vector path = {
         b2Vec2{5.0f, 5.0f},
+        b2Vec2{4.0f, 5.0f},
         b2Vec2{75.0f, 5.0f}  ,
+        b2Vec2{75.0f, 40.0f} ,
         b2Vec2{75.0f, 75.0f},
+        b2Vec2{40.0f, 75.0f} ,
         b2Vec2{5.0f, 75.0f}  ,
+        b2Vec2{5.0f, 40.0f}  ,
         b2Vec2{5.0f, 5.0f}   ,
     };
     car_ptr->setGlobalPath(path);
@@ -286,8 +308,8 @@ TEST(Vehicle, RectangularPath) {
     map.endSimulation();
     map.flushFrames((output_debug_path_testVehicle / "vehicle_pid_rectangular_path.mp4").string());
     // After disturbance, vehicle should realign close to the road center (y ≈ 5.0)
-    float final_y = car_ptr->position().y;
-    EXPECT_NEAR(final_y, 5.0f, 0.05f);
+    float dist = b2Distance(car_ptr->position(), b2Vec2{5.0f, 5.0f});
+    EXPECT_NEAR(dist, 0.0f, 0.5 * car_ptr->length()); // allows tolerance up to half the vehicle length
     destroyWorld();
 }
 

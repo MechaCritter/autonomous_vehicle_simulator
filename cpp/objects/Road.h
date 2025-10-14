@@ -2,7 +2,7 @@
 #define VEHICLE_SIMULATOR_ROAD_H
 
 #include "../objects/MapObject.h"
-#include "../utils/logging.h"
+#include "../utils/LoggingUtils.hpp"
 
 /**
  * @brief Static road patch. Stamps Cell::Road into the base map and does not participate in collisions.

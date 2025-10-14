@@ -5,7 +5,7 @@
 #include <unordered_set>
 #include <opencv2/videoio.hpp>
 #include <opencv2/imgproc.hpp>
-#include "../utils/logging.h"
+#include "../utils/LoggingUtils.hpp"
 #include "../data/constants.h"
 #include "../include/nlohmann/json.hpp"
 #include "../objects/MapObject.h"
@@ -111,7 +111,7 @@ Map2D::Map2D(int width, int height) {
     map_data_.resize(width * height);
     objects_.clear();
     frame_cache_valid_ = false;
-    cf_chunk_ = std::max<size_t>(1, max_frames_stored_ / 10);
+    cap_frame_chunk_ = std::max<size_t>(1, max_frames_stored_ / 10);
     // for conenience and the ring buffer, use this simple rule!
     if (max_frames_stored_ % 10 != 0) {
         throw std::runtime_error("max_frames_stored_ must be a multiple of 10");
@@ -125,6 +125,7 @@ Map2D::Map2D(int width, int height) {
     background_free_object_ = free_object.get(); // warning "the address of the local variable 'free_object' may escape the function" can be ignored because
                                                 // the object is added to the map, hence the map keeps it alive
     // move the background_free_
+    initializeCachedFrame();
     addObject(std::move(free_object));
 }
 
@@ -212,7 +213,7 @@ std::pair<int,int> Map2D::worldToCell(float world_x, float world_y) const
 void Map2D::addObject(std::unique_ptr<MapObject> object)
 {
     if (object->bodyType() == b2_staticBody) {
-        stampObject(object);
+        stampStaticObject_(object);
     }
     object->setMap(this);  // set the map for the object
     objects_.push_back(std::move(object));
@@ -228,7 +229,7 @@ void Map2D::startAllObjects() const {
 }
 
 #ifdef FRAME_PROFILER
-#include "../utils/Profiler.h"
+#include "../utils/Profiler.hpp"
 
 void Map2D::startUpdatingObjectsPhysics_() {
     physics_update_thread = std::thread([this]() {
@@ -449,45 +450,69 @@ void Map2D::addMotionFrame() {
     cv::Mat frame = cached_original_frame_.clone();
 
     // Stamp dynamic objects onto the frame
-    stampObjectsOntoFrame_(frame);
+    stampAllDynamicObjectsOntoFrame_(frame);
 
-    if (cf_size_ >= cf_capacity_) {
-        throw std::runtime_error("Capture buffer overflow");
+    if (cap_frame_size_ >= max_frames_stored_) {
+        WARN_ONCE(
+            "Maximum number of frames stored reached: "
+            + std::to_string(max_frames_stored_)
+            + ". Further frames will be discarded."
+        );
+        return;
     }
-    const size_t pos = cf_head_ + cf_size_;
+
+    if (cap_frame_size_ >= cap_frame_capacity_) {
+        throw std::runtime_error("Capture buffer overflow. Capacity is " + std::to_string(cap_frame_capacity_) + \
+            "but tried to add frame at position " + std::to_string(cap_frame_head_ + cap_frame_size_));
+    }
+    const size_t pos = cap_frame_head_ + cap_frame_size_;
     capture_frames_[pos] = std::move(frame);
-    ++cf_size_;
+    ++cap_frame_size_;
 }
 
 void Map2D::invalidateFrameCache() const {
     frame_cache_valid_ = false;
 }
 
-// New method: stamps all dynamic objects onto the given frame
-void Map2D::stampObjectsOntoFrame_(cv::Mat& frame) const
-{
+void Map2D::stampAllDynamicObjectsOntoFrame_(Frame &frame) {
     for (const auto& obj : objects_) {
-        if (obj->bodyType() == b2_staticBody) continue; // skip static objects
-        const auto corners = obj->worldBoxCorners();
+        if (obj->bodyType() == b2_staticBody) continue;
+        stampObjectOntoFrame_(obj, frame);
+    }
+}
 
-        std::array<cv::Point, 4> poly{};
-        for (size_t i = 0; i < 4; ++i) {
-            // world meters -> pixel coords
-            const int ix = std::lround(corners[i].x / resolution_);
-            const int iy = std::lround(corners[i].y / resolution_);
 
-            poly[i].x = ix;
-            poly[i].y = iy;
+void Map2D::stampObjectOntoFrame_(const std::unique_ptr<MapObject>& obj, Frame& frame)
+{
+    const auto corners = obj->worldBoxCorners();
+    std::array<cv::Point, 4> poly{};
+    for (size_t i = 0; i < 4; ++i) {
+        // world meters -> pixel coords);
+        poly[i].x = std::lround(corners[i].x / resolution_);
+        poly[i].y = std::lround(corners[i].y / resolution_);
+    }
+
+    // 1-channel mask to avoid CV_8UC3 byte stepping bugs.
+    cv::Mat mask(height_, width_, CV_8UC1, cv::Scalar(0));
+    cv::fillConvexPoly(mask, poly.data(), (int)poly.size(), cv::Scalar(255), cv::LINE_AA);
+
+    // Paint overlay on the frame (BGR).
+    const auto bgr = obj->colorBGR();
+    cv::fillConvexPoly(frame, poly.data(), (int)poly.size(),
+                       cv::Scalar(bgr[0], bgr[1], bgr[2]), cv::LINE_AA);
+
+    // Only update base map for static objects — and only inside the polygon.
+    if (obj->bodyType() == b2_staticBody) {
+        const Cell c = obj->cellType();
+        const cv::Rect roi = cv::boundingRect(std::vector(poly.begin(), poly.end()))
+                             & cv::Rect(0, 0, width_, height_);
+        for (int y = roi.y; y < roi.y + roi.height; ++y) {
+            const uint8_t* mrow = mask.ptr<uint8_t>(y);
+            for (int x = roi.x; x < roi.x + roi.width; ++x)
+                if (mrow[x]) {
+                    map_data_[idx(x, y)] = c;
+                }
         }
-
-        const auto bgr = obj->colorBGR();
-        cv::fillConvexPoly(
-            frame,
-            poly.data(),
-            static_cast<int>(poly.size()),
-            cv::Scalar(bgr[0], bgr[1], bgr[2]),
-            cv::LINE_AA
-        );
     }
 }
 
@@ -502,9 +527,9 @@ void Map2D::addMotionFrame(const Frame &annotated)
     initializeCachedFrame();
     // expand the buffer if needed
     ensureCaptureCapacityForNextPush_();
-    const size_t pos = cf_head_ + cf_size_;
+    const size_t pos = cap_frame_head_ + cap_frame_size_;
     capture_frames_[pos] = std::move(annotated);
-    ++cf_size_;
+    ++cap_frame_size_;
 }
 
 void Map2D::flushFrames(const std::string& filename)
@@ -533,31 +558,36 @@ cv::Mat Map2D::renderToMat() const
     return cached_original_frame_.clone();
 }
 
-void Map2D::stampObject(const std::unique_ptr<MapObject>& object)
+void Map2D::stampStaticObject_(const std::unique_ptr<MapObject>& object)
 {
-    // world -> pixel polygon
-    const auto corners = object->worldBoxCorners();
-    std::array<cv::Point,4> poly{};
-    for (size_t i = 0; i < 4; ++i) {
-        const int ix = std::lround(corners[i].x / resolution_);
-        const int iy = std::lround(corners[i].y / resolution_);
-        poly[i].x = ix;
-        poly[i].y = iy;
+    if (object->bodyType() != b2_staticBody) {
+        throw std::runtime_error("stampStaticObject_ called with a non-static object");
     }
-
-    // draw into mask and write back to map_data_
-    cv::Mat mask(height_, width_, CV_8UC1, cv::Scalar(0));
-    cv::fillConvexPoly(mask, poly.data(), (int)poly.size(), cv::Scalar(255), cv::LINE_AA);
-
-    const Cell c = object->cellType();
-    for (int y = 0; y < height_; ++y) {
-        const uint8_t* row = mask.ptr<uint8_t>(y);
-        for (int x = 0; x < width_; ++x) {
-            if (row[x]) {
-                map_data_[idx(x,y)] = c; // write to base map
-            }
-        }
-    }
+    // // draw into mask and write back to map_data_
+    // // world -> pixel polygon
+    // const auto corners = object->worldBoxCorners();
+    //
+    // std::array<cv::Point,4> poly{};
+    // for (size_t i = 0; i < 4; ++i) {
+    //     const int ix = std::lround(corners[i].x / resolution_);
+    //     const int iy = std::lround(corners[i].y / resolution_);
+    //     poly[i].x = ix;
+    //     poly[i].y = iy;
+    // }
+    //
+    // const auto bgr = object->colorBGR();
+    // cv::fillConvexPoly(mask, poly.data(), poly.size(), cv::Scalar(bgr[0], bgr[1], bgr[2]), cv::LINE_AA);
+    // const Cell c = object->cellType();
+    // for (int y = 0; y < height_; ++y) {
+    //     const uint8_t* row = mask.ptr<uint8_t>(y);
+    //     for (int x = 0; x < width_; ++x) {
+    //         if (row[x]) {
+    //             map_data_[idx(x,y)] = c; // write to base map
+    //         }
+    //     }
+    // }
+    initializeCachedFrame(); // avoid stamping onto an empty frame
+    stampObjectOntoFrame_(object, cached_original_frame_);
     invalidateFrameCache(); // refresh cached original frame
 }
 
@@ -640,29 +670,29 @@ void Map2D::destroyAllDynamicObjects() {
 void Map2D::ensureCaptureCapacityForNextPush_()
 {
     // Initial setup: allocate first chunk of slots.
-    if (cf_capacity_ == 0) {
-        cf_capacity_ = std::min(max_frames_stored_, cf_chunk_);
-        capture_frames_.resize(cf_capacity_);  // default-constructed cv::Mat slots
-        cf_head_ = 0;
-        cf_size_ = 0;
+    if (cap_frame_capacity_ == 0) {
+        cap_frame_capacity_ = std::min(max_frames_stored_, cap_frame_chunk_);
+        capture_frames_.resize(cap_frame_capacity_);  // default-constructed cv::Mat slots
+        cap_frame_head_ = 0;
+        cap_frame_size_ = 0;
         return;
     }
 
     // Still have a free slot? nothing to do.
-    if (cf_size_ < cf_capacity_) return;
+    if (cap_frame_size_ < cap_frame_capacity_) return;
 
     // Full: try to grow if we can.
-    if (cf_capacity_ < max_frames_stored_) {
+    if (cap_frame_capacity_ < max_frames_stored_) {
         // Geometric growth (at least +cf_chunk_), clamped to max_frames_stored_.
-        size_t proposed = std::max(cf_capacity_ * 2, cf_capacity_ + cf_chunk_);
+        size_t proposed = std::max(cap_frame_capacity_ * 2, cap_frame_capacity_ + cap_frame_chunk_);
         size_t new_cap  = std::min(proposed, max_frames_stored_);
 
         // Fast path: already linear [0..cf_size_)
-        if (cf_head_ == 0) {
+        if (cap_frame_head_ == 0) {
             // Reserve first to reduce chances of reallocation; then resize to create new slots.
             capture_frames_.reserve(new_cap);
             capture_frames_.resize(new_cap);
-            cf_capacity_ = new_cap;
+            cap_frame_capacity_ = new_cap;
             return;
         }
 
@@ -672,13 +702,13 @@ void Map2D::ensureCaptureCapacityForNextPush_()
         newStore.reserve(new_cap);
 
         // First segment: [cf_head_ .. cf_head_ + first)
-        const size_t first = std::min(cf_size_, cf_capacity_ - cf_head_);
+        const size_t first = std::min(cap_frame_size_, cap_frame_capacity_ - cap_frame_head_);
         newStore.insert(newStore.end(),
-                        std::make_move_iterator(capture_frames_.begin() + cf_head_),
-                        std::make_move_iterator(capture_frames_.begin() + cf_head_ + first));
+                        std::make_move_iterator(capture_frames_.begin() + cap_frame_head_),
+                        std::make_move_iterator(capture_frames_.begin() + cap_frame_head_ + first));
 
         // Second segment (if any): [0 .. second)
-        const size_t second = cf_size_ - first;
+        const size_t second = cap_frame_size_ - first;
         if (second) {
             newStore.insert(newStore.end(),
                             std::make_move_iterator(capture_frames_.begin()),
@@ -689,8 +719,8 @@ void Map2D::ensureCaptureCapacityForNextPush_()
         newStore.resize(new_cap);
 
         capture_frames_.swap(newStore);
-        cf_capacity_ = new_cap;
-        cf_head_     = 0;          // now linearized
+        cap_frame_capacity_ = new_cap;
+        cap_frame_head_     = 0;          // now linearized
         // cf_size_ unchanged
     }
 }
@@ -708,8 +738,8 @@ void Map2D::buildGraph_() {
 }
 
 void Map2D::resetGraphStorage_() {
-    global_graph_ = Graph<int>();
-    node_coords_.clear();
+    graph_data_.graph = Graph<int>();
+    graph_data_.node_coords.clear();
 }
 
 std::vector<Road*> Map2D::collectRoads_() const {
@@ -722,16 +752,10 @@ std::vector<Road*> Map2D::collectRoads_() const {
     return out;
 }
 
-int Map2D::addNode_(const b2Vec2& p) {
+int Map2D::addNode_(const b2Vec2& point) {
     //tODO: return the existing node if p is very close to an existing node
-    int id = static_cast<int>(graph_nodes_.size());
-    std::string label = "lbl_id" + std::to_string(id);
-    auto new_node = std::make_unique<Node<int>>(label, id);
-    auto* node_ptr = new_node.get();
-    graph_nodes_.push_back(std::move(new_node));
-    node_coords_.push_back(p);
-    global_graph_.addNode(node_ptr);
-    return id;
+    auto new_node = utils::insertNewNodeReturnPtr(&graph_data_, point);
+    return new_node->getData();
 }
 
 std::array<b2Vec2,4> Map2D::roadCorners_(const Road* r) const {
@@ -748,7 +772,7 @@ std::array<b2Vec2,4> Map2D::roadCorners_(const Road* r) const {
 
 bool Map2D::obbOverlap_(const std::array<b2Vec2,4>& A, const std::array<b2Vec2,4>& B) {
     const auto axes = [&](){
-        std::array<b2Vec2,4> ax;
+        std::array<b2Vec2,4> ax{};
         ax[0] = {A[0].x - A[1].x, A[0].y - A[1].y};
         ax[1] = {A[0].x - A[2].x, A[0].y - A[2].y};
         ax[2] = {B[0].x - B[1].x, B[0].y - B[1].y};
@@ -821,11 +845,12 @@ void Map2D::addEndpointNodes_(
         const b2Vec2 e2 = C - 0.5f * r->length() * d;
 
         if (!hasAny) {
+            // TODO: fix
             roadNodes[r] = {addNode_(e1), addNode_(e2)};
             continue;
         }
         if (roadNodes[r].size() == 1) {
-            const b2Vec2 ex = node_coords_[roadNodes[r][0]];
+            const b2Vec2 ex = graph_data_.node_coords[utils::nodeIdToLabel(roadNodes[r][0])];
             const b2Vec2 cand = (b2Distance(ex, e1) > b2Distance(ex, e2)) ? e1 : e2;
             roadNodes[r].push_back(addNode_(cand));
         }
@@ -844,23 +869,17 @@ void Map2D::addEdgesAlongRoads_(
         const float a = b2Rot_GetAngle(r->rotation());
         const b2Vec2 d{std::cos(a), std::sin(a)};
         std::sort(ids.begin(), ids.end(), [&](int A, int B) {
-            const float ta = b2Dot(node_coords_[A] - C, d);
-            const float tb = b2Dot(node_coords_[B] - C, d);
+            const float ta = b2Dot(graph_data_.node_coords[utils::nodeIdToLabel(A)] - C, d);
+            const float tb = b2Dot(graph_data_.node_coords[utils::nodeIdToLabel(B)] - C, d);
             return ta < tb;
         });
         for (size_t k = 1; k < ids.size(); ++k) {
             const int u = ids[k - 1], v = ids[k];
-            Node<int>* node1 = graph_nodes_[u].get();
-            Node<int>* node2 = graph_nodes_[v].get();
-            std::pair node_pair_12 = {node1, node2};
-            std::pair node_pair_21 = {node2, node1};
-            CXXGraph::id_t edge_id = graph_edges_.size();
-            auto edge_12 = std::make_unique<Edge<int>>(edge_id, node_pair_12);
-            auto edge_21 = std::make_unique<Edge<int>>(edge_id, node_pair_21);
-            global_graph_.addEdge(edge_12.get());
-            global_graph_.addEdge(edge_21.get());
-            graph_edges_.push_back(std::move(edge_12));
-            graph_edges_.push_back(std::move(edge_21));
+            auto node1 = graph_data_.graph_nodes[utils::nodeIdToLabel(u)];
+            auto node2 = graph_data_.graph_nodes[utils::nodeIdToLabel(v)];
+            auto new_edge = utils::insertUndirectedEdgeReturnPtr(&graph_data_, node1, node2);
+            int new_edge_id = new_edge->getId();
+            graph_data_.graph_edges[new_edge_id] = new_edge;
         }
     }
 }

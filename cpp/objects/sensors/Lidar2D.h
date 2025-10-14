@@ -8,7 +8,7 @@
 #include <cmath>
 #include "Sensor.h"
 #include "../map/Map2D.h"
-#include "../utils/logging.h"
+#include "../utils/LoggingUtils.hpp"
 
 
 class Lidar2D final : public Sensor
@@ -49,6 +49,12 @@ public:
     [[nodiscard]] double angleMin() const noexcept { return angle_min_; }
     [[nodiscard]] double angleIncrement() const noexcept { return angle_increment_; }
     [[nodiscard]] Cell cellType() const noexcept override { return Cell::Lidar; }
+
+    // Setters
+    void setMaxRange(double max_range) {
+        if (max_range <= 0) throw std::invalid_argument("Max range must be positive");
+        max_range_ = max_range;
+    }
 
 protected:
     /// Override: returns the *type‑local* logger

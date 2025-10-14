@@ -16,18 +16,32 @@ static std::filesystem::path output_debug_path_testmap2d = "/home/critter/worksp
 static std::atomic<int> global_video_counter{1};
 
 // Structure to define a vehicle configuration
+/**
+     * \brief VehicleConfig holds parameters for vehicle initialization in simulation.
+     * \param l Vehicle length
+     * \param w Vehicle width
+     * \param color BGR color as std::array<uint8_t,3>
+     * \param rot Initial rotation (radians)
+     * \param init_speed Initial speed (m/s)
+     * \param desired_speed Target speed (m/s)
+     * \param x Initial x position
+     * \param y Initial y position
+     * \param force Motor force (N)
+     * \param steer Steering angle (radians)
+     */
 struct VehicleConfig {
     float length, width;
     std::array<uint8_t,3> color_bgr;
     float rotation;
     float init_speed;
+    float desired_speed;
     float init_x, init_y;
     float motor_force;
     float steering_angle;
 
-    VehicleConfig(float l, float w, std::array<uint8_t,3> color, float rot, float speed,
-                  float x, float y, float force, float steer = 0.0f)
-        : length(l), width(w), color_bgr(color), rotation(rot), init_speed(speed),
+    VehicleConfig(float l, float w, std::array<uint8_t,3> color, float rot, float init_speed, float desired_speed,
+                  float x, float y, float force, float steer)
+        : length(l), width(w), color_bgr(color), rotation(rot), init_speed(init_speed), desired_speed(desired_speed),
           init_x(x), init_y(y), motor_force(force), steering_angle(steer) {}
 };
 
@@ -90,6 +104,10 @@ protected:
     }
 };
 
+/**
+ * @note all vehicles use open-loop control for simplicity
+ *
+ */
 TEST_P(Map2DSimulationTest, SimulationScenarios) {
     auto params = GetParam();
     testLogger->info("Running simulation test: {}", params.test_name);
@@ -104,13 +122,16 @@ TEST_P(Map2DSimulationTest, SimulationScenarios) {
             config.length, config.width, config.color_bgr, config.rotation,
             config.init_speed, config.init_x, config.init_y, config.motor_force
         );
+        // disable controller to do open-loop control
+        vehicle->disableController();
         vehicle->drive();
+        vehicle->setDesiredAbsoulteSpeed(config.desired_speed);
         vehicle->setSteeringAngle(config.steering_angle);
         vehicle->setMotorForce(config.motor_force);
         vehicle->startUpdating();
 
         testLogger->info("Vehicle {} has motor force {:.2f} N and speed {:.2f} m/s",
-                        i + 1, vehicle->motorForce(), vehicle->speed());
+                        i + 1, vehicle->motorForce(), vehicle->absoluteSpeed());
 
         map.addObject(std::move(vehicle));
     }
@@ -160,8 +181,8 @@ INSTANTIATE_TEST_SUITE_P(
         SimulationTestParams{
             "Original_Two_Vehicles_With_Obstacle",
             {
-                VehicleConfig(2.5f, 1.5f, {255, 0, 255}, M_PI/6, 0.0f, 0.0f, 7.0f, 10000.0f, 0.0f),
-                VehicleConfig(2.5f, 1.5f, {255, 0, 0}, 0, 0.0f, 0.0f, 15.0f, 10000.0f, 0.0f)
+                VehicleConfig(2.5f, 1.5f, {255, 0, 255}, M_PI/6, 0.0f, 43.0f, 7.0f, 0.0f, 10000.0f, 0.0f),
+                VehicleConfig(2.5f, 1.5f, {255, 0, 0}, 0, 0.0f, 50.0, 0.0f, 15.0f, 10000.0f, 0.0f)
             },
             {
                 ObstacleConfig(20.0f, 20.0f, 25.0f, 17.0f, M_PI/4)
@@ -173,7 +194,7 @@ INSTANTIATE_TEST_SUITE_P(
         SimulationTestParams{
             "Single_Vehicle_Obstacle_Course",
             {
-                VehicleConfig(3.0f, 1.8f, {0, 255, 0}, 0.0f, 0.0f, 10.0f, 10.0f, 8000.0f, M_PI/100)
+                VehicleConfig(3.0f, 1.8f, {0, 255, 0}, 0.0f, 0.0f, 10.0, 10.0f, 10.0f, 8000.0f, M_PI/100)
             },
             {
                 ObstacleConfig(15.0f, 15.0f, 30.0f, 40.0f, 0.0f),
@@ -187,10 +208,10 @@ INSTANTIATE_TEST_SUITE_P(
         SimulationTestParams{
             "Multi_Vehicle_Race",
             {
-                VehicleConfig(2.0f, 1.2f, {255, 255, 0}, 0.0f, 10.0f, 10.0f, 20.0f, 12000.0f, 0.0f),
-                VehicleConfig(2.2f, 1.4f, {0, 0, 255}, M_PI, 0.0f, 38.5f, 15.0f, 11000.0f, -M_PI/30),
-                VehicleConfig(1.8f, 1.0f, {255, 165, 0}, -2 * M_PI/3, 0.0f, 40.5f, 40.0f, 13000.0f, M_PI/30),
-                VehicleConfig(2.1f, 1.3f, {128, 0, 128}, 0.0f, 0.0f, 42.5f, 5.0f, 10500.0f, 0.0f)
+                VehicleConfig(2.0f, 1.2f, {255, 255, 0}, 0.0f, 10.0f, 60.0, 10.0f, 20.0f, 12000.0f, 0.0f),
+                VehicleConfig(2.2f, 1.4f, {0, 0, 255}, M_PI, 0.0f, 38.5f, 80.0, 15.0f, 11000.0f, -M_PI/30),
+                VehicleConfig(1.8f, 1.0f, {255, 165, 0}, -2 * M_PI/3, 0.0f, 50.0, 40.5f, 40.0f, 13000.0f, M_PI/30),
+                VehicleConfig(2.1f, 1.3f, {128, 0, 128}, 0.0f, 0.0f, 45.0, 42.5f, 5.0f, 10500.0f, 0.0f)
             },
             {
                 ObstacleConfig(30.0f, 5.0f, 20.0f, 20.0f, 0.0f)

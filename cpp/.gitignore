@@ -1046,3 +1046,7 @@ dkms.conf
 
 # CLion stuff
 .idea/
+
+# external dependencies
+/cmake-build-debug/_deps/box2d-src/
+/cmake-build-debug/_deps/googletest-src/

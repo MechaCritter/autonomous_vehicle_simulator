@@ -47,8 +47,8 @@ public:
      * @brief Construct controller with defaults (tune these to your vehicle).
      */
     PIDController() noexcept
-        : steer_{/*kp*/4.0f, /*ki*/0.5f, /*kd*/1.0f}
-        , speed_{/*kp*/2000.0f, /*ki*/0.7f, /*kd*/300.0f}
+        : steer_{/*kp*/1.0f, /*ki*/0.5f, /*kd*/3.0f}
+        , speed_{/*kp*/100.0f, /*ki*/0.7f, /*kd*/300.0f}
         , lim_steer_{-0.6f, 0.6f, -0.2f, 0.2f}   // ~±34° steering, modest I clamp
         , lim_speed_{-5000.0f, 5000.0f, -50.0f, 50.0f} // ±5 kN force, I clamp
         , use_derivative_on_measurement_speed_{true}
