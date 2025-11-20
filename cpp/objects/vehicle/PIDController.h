@@ -48,9 +48,9 @@ public:
      */
     PIDController() noexcept
         : steer_{/*kp*/1.0f, /*ki*/0.5f, /*kd*/3.0f}
-        , speed_{/*kp*/100.0f, /*ki*/0.7f, /*kd*/300.0f}
+        , speed_{/*kp*/200.0f, /*ki*/1.7f, /*kd*/600.0f}
         , lim_steer_{-0.6f, 0.6f, -0.2f, 0.2f}   // ~±34° steering, modest I clamp
-        , lim_speed_{-5000.0f, 5000.0f, -50.0f, 50.0f} // ±5 kN force, I clamp
+        , lim_speed_{-9000.0f, 9000.0f, -50.0f, 50.0f} // ±5 kN force, I clamp
         , use_derivative_on_measurement_speed_{true}
         , d_lpf_alpha_{0.15f}                    // low-pass for derivative
         , prev_angle_error_{0.0f}

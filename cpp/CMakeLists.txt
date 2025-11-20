@@ -115,6 +115,7 @@ add_executable(code_test
         tests/test_map2d.cpp
         tests/test_lidar2d.cpp
         tests/test_vehicle.cpp
+        tests/map_vehicle_integration_test.cpp
 )
 
 target_link_libraries(code_test
@@ -141,5 +142,3 @@ add_custom_target(clean_test_videos
         COMMENT "Removing all files under tests/debug"
         VERBATIM
 )
-
-

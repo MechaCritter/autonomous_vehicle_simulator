@@ -275,7 +275,7 @@ TEST(Vehicle, RectangularPath) {
     // Plan route straight along the road
     std::vector path = {
         b2Vec2{5.0f, 5.0f},
-        b2Vec2{4.0f, 5.0f},
+        b2Vec2{40.0f, 5.0f},
         b2Vec2{75.0f, 5.0f}  ,
         b2Vec2{75.0f, 40.0f} ,
         b2Vec2{75.0f, 75.0f},

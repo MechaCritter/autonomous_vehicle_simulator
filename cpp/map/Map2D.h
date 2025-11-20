@@ -305,6 +305,13 @@ public:
 
     /** @return the graph data of the map */
     [[nodiscard]] GraphData& graphData() { return graph_data_; }
+
+    /**
+     * @brief Build a road graph from the road objects in the map.
+     * This constructs nodes at intersections and endpoints, and edges along roads.
+     */
+    void buildGraph() { buildGraph_(); }
+
 private:
     size_t cap_frame_head_ = 0; // index of logical front
     size_t cap_frame_size_ = 0; // number of valid frames in buffer

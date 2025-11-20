@@ -20,7 +20,7 @@ Vehicle::Vehicle(float length, float width,
     drive();
     max_motor_force_ = std::abs(mass() * constants::g);    // traction-limited
     max_brake_force_ = 4.0f * max_motor_force_;            // strong brakes
-    pid_controller_.setSpeedLimits({-max_motor_force_, max_motor_force_, -50.0f, 50.0f});
+    pid_controller_.setSpeedLimits({-max_motor_force_, max_motor_force_, -100.0f, 100.0f});
     pid_controller_.setSteerLimits({-max_steering_angle_, max_steering_angle_, -0.2f, 0.2f});
     setMotorForce(motor_force); // initial motor force
 }
@@ -107,7 +107,7 @@ void Vehicle::update() {
                 }
                 if (!global_path_.empty()) {
                     // Perform local planning and control if a target path is set
-                    auto local_path_res = findBestPath_();
+                    auto local_path_res = findBestLocalPath_();
                     if (!local_path_res.has_value()) {
                         logger().error("Local path planning failed: {}", local_path_res.error());
                         mode_ = Mode::Brake; // switch to brake mode
@@ -129,6 +129,15 @@ void Vehicle::update() {
                         // Apply steering and throttle commands (with safety clamping)
                         setSteeringAngle(steer_ang);
                         setMotorForce(motor_force);
+
+                        if (global_head_idx_ == global_path_.size() - 1 &&
+                            b2Distance(position(), global_path_.back()) < stop_distance_) {
+                            logger().info("Arrived at the final waypoint. Braking.");
+                            mode_ = Mode::Brake;
+                            setSteeringAngle(0.0f);
+                            setMotorForce(0.0f);
+                            break;
+                            }
                     }
                     break;
                 }
@@ -203,18 +212,12 @@ void Vehicle::brake(float force) {
 }
 
 
-std::expected<std::vector<b2Vec2>, std::string> Vehicle::findBestPath_() {
+std::expected<std::vector<b2Vec2>, std::string> Vehicle::findBestLocalPath_() {
     std::vector<b2Vec2> out;
     if (global_path_.empty()) return out;
 
-    prunePassedWaypoints_();
+    advanceGlobalHead_();
     const auto [start,end] = computeHorizon_();
-    global_path_[0] = start;
-
-    // DEBUG
-    std::cout << "Start position: (" << start.x << ", " << start.y << ")\n";
-    std::cout << "End position: (" << end.x << ", " << end.y << ")\n";
-    // END DEBUG
 
     // Build a fresh local graph config per lattice build to avoid mutating the global map graph
     GraphData local_graph_data_instance; // lives until function returns
@@ -278,30 +281,36 @@ void Vehicle::notifyBox2DWorld_() const {
 std::pair<b2Vec2,b2Vec2> Vehicle::computeHorizon_() const {
     if (global_path_.empty()) return {position(), position()};
     const float horizont = lattice_config_.horizon_m;
+
+    const std::size_t global_path_size = global_path_.size();
+    const std::size_t head = std::min(global_head_idx_, (global_path_size>0)? (global_path_size-1) : 0);
+
     b2Vec2 start = position(),
     end = global_path_.back();
-    float accumulated_distance=0.f;
-    for (size_t i = 1; i < global_path_.size(); ++i){
-        const float d = b2Distance(global_path_[i-1], global_path_[i]);
-        if (accumulated_distance + d > horizont){
-            const float t = (horizont-accumulated_distance)/std::max(d,1e-6f);
-            end = { global_path_[i-1].x + t*(global_path_[i].x - global_path_[i-1].x),
-                    global_path_[i-1].y + t*(global_path_[i].y - global_path_[i-1].y) };
-            if (b2Distance(end, start) > lattice_config_.min_distance_between_nodes_) {
-                break;
+    float accumulated_distance = 0.f;
+
+    if (global_path_size >= 2 && head < global_path_size) {
+        for (size_t i = head + 1; i < global_path_.size(); ++i){
+            const float d = b2Distance(global_path_[i-1], global_path_[i]);
+            if (accumulated_distance + d > horizont){
+                const float t = (horizont-accumulated_distance)/std::max(d,1e-6f);
+                end = { global_path_[i-1].x + t*(global_path_[i].x - global_path_[i-1].x),
+                        global_path_[i-1].y + t*(global_path_[i].y - global_path_[i-1].y) };
+                if (b2Distance(end, start) > lattice_config_.min_distance_between_nodes_) {
+                    break;
+                }
             }
+            accumulated_distance += d;
+            end = global_path_[i];
+            if (accumulated_distance>=horizont) break;
         }
-        accumulated_distance += d;
-        end = global_path_[i];
-        if (accumulated_distance>=horizont) break;
     }
     return {start,end};
 }
 
 int Vehicle::buildLattice_(const b2Vec2& start,
                             const b2Vec2& end,
-                            std::vector<int>& lastLayer)
-{
+                            std::vector<int>& lastLayer) const {
     auto *graph_data = lattice_config_.graph_data;
     auto *node_coords = &graph_data->node_coords;
     auto startNodePtr = utils::insertNewNodeReturnPtr(graph_data, start);
@@ -435,69 +444,57 @@ std::vector<b2Vec2> Vehicle::reconstructLocalPath_(
     return pts;
 }
 
-void Vehicle::prunePassedWaypoints_()
+void Vehicle::advanceGlobalHead_()
 {
-    if (global_path_.size() < 2) return;
+    // Nothing to do if fewer than 2 points remain ahead of head.
+    while (global_path_.size() >= 2 && global_head_idx_ + 1 <= global_path_.size()) {
 
-    const b2Vec2 P = position();
-    const float reach_r = std::max(0.1f * length(), lattice_config_.min_distance_between_nodes_);
-
-    // Keep pruning while the next waypoint is clearly behind us or already reached.
-    while (global_path_.size() >= 2) {
-        // Only P and a final B left -> drop B if we're basically there.
-        if (global_path_.size() == 2) {
-            const b2Vec2 B = global_path_[1];
-            if (b2Distance(P, B) <= reach_r) {
-                logger().debug("Prune: final waypoint reached (dist {:.2f} <= {:.2f}). Dropping B.",
-                               b2Distance(P, B), reach_r);
-                global_path_.erase(global_path_.begin() + 1);
-                mode_ = Mode::Brake; // stop when we reach the end
-                continue;
-            }
-            break; // nothing more to prune
+        // If head already points at the last element, stop (no [B,C] segment).
+        if (global_head_idx_ + 1 == global_path_.size()) {
+            logger().debug("Head advance: at last waypoint, cannot advance further.");
+            break;
         }
 
-        const b2Vec2 B = global_path_[1];
-        const b2Vec2 C = global_path_[2];
-        const b2Vec2 BC{ C.x - B.x, C.y - B.y };
-        const float L2 = BC.x * BC.x + BC.y * BC.y;
+        const b2Vec2 P = position();
+        const b2Vec2 B = global_path_[global_head_idx_];
+        const b2Vec2 C = global_path_[global_head_idx_ + 1];
 
-        // Degenerate next segment -> drop B
+        b2Vec2 BC{ C.x - B.x, C.y - B.y };
+        const float L2 = BC.x*BC.x + BC.y*BC.y;
         if (L2 < 1e-6f) {
-            logger().debug("Prune: degenerate segment |C-B|≈0. Dropping B... Current position P=({:.2f},{:.2f}), B=({:.2f},{:.2f}), C=({:.2f},{:.2f})",
-                       P.x, P.y, B.x, B.y, C.x, C.y);
-            global_path_.erase(global_path_.begin() + 1);
+            // Degenerate segment: treat as consumed and move on
+            logger().debug("Head advance: degenerate [B,C]. head={} -> {}", global_head_idx_, global_head_idx_ + 1);
+            ++global_head_idx_;
             continue;
         }
 
+        const float L = std::sqrt(L2);
+        BC.x /= L; BC.y /= L;                 // unit tangent
         const b2Vec2 BP{ P.x - B.x, P.y - B.y };
-        const float invL   = 1.0f / std::sqrt(L2);
-        const float t      = (BP.x * BC.x + BP.y * BC.y) / L2;      // normalized along-track
-        const float s      = (BP.x * BC.x + BP.y * BC.y) * invL;    // metric along-track
-        const float crossZ = std::fabs(BP.x * BC.y - BP.y * BC.x);  // 2D "cross"
-        const float e_xt   = crossZ * invL;                          // cross-track error
 
-        // Heuristics:
-        // - t > 0 → we are ahead of B along the direction towards C (i.e., we passed B).
-        // - e_xt small → we are roughly on the corridor around the path.
-        // - Or, if we are simply close to B, also drop it.
-        const bool ahead_of_B   = (t > 0.0f + 1e-3f);
-        const bool near_B       = (b2Distance(P, B) <= reach_r);
-        const bool corridor_ok  = (e_xt <= 2.0f * width()) || (s > 0.5f * lattice_config_.min_distance_between_nodes_);
+        // Signed along-track in meters (ahead of B is positive), lateral error in meters
+        const float s_along = BP.x*BC.x + BP.y*BC.y;
+        const float e_xt    = std::fabs(BP.x*BC.y - BP.y*BC.x);
 
-        if (ahead_of_B && corridor_ok && e_xt < lattice_config_.min_distance_between_nodes_) {
-            logger().debug("Prune: waypoint[1] behind vehicle (t={:.2f}, e_xt={:.2f}m, s={:.2f}m). Dropping B... "
-                           "Current position: P=({:.2f},{:.2f}), B=({:.2f},{:.2f}), C=({:.2f},{:.2f})",
-                           t, e_xt, s, P.x, P.y, B.x, B.y, C.x, C.y);
-            global_path_.erase(global_path_.begin() + 1);
+        // Tight tolerances: only skip when we are near the corridor
+        const float lateral_tol =
+            std::max(0.75f * width(), 0.25f * lattice_config_.min_distance_between_nodes_);
+        const float reach_r =
+            std::min(0.5f * lattice_config_.min_distance_between_nodes_,
+                     std::max(0.25f * length(), 0.4f));
+        const float t_eps = 0.05f; // require a bit of forward progress along B→C
+
+        const bool lateral_ok = (e_xt <= lateral_tol);
+        const bool passed_B   = (s_along > t_eps);
+        const bool near_B     = (b2Distance(P, B) <= reach_r) && lateral_ok;
+
+        if ((passed_B && lateral_ok) || near_B) {
+            logger().debug("Head advance: drop B (head {}): s={:.2f}m e_xt={:.2f}m |PB|={:.2f}m",
+                           global_head_idx_, s_along, e_xt, b2Distance(P,B));
+            ++global_head_idx_;
+            // Keep looping: we might have blown past a couple of nodes
             continue;
         }
-        if (near_B) {
-            logger().debug("Prune: near waypoint[1] (dist {:.2f} <= {:.2f}). Dropping B... current position: P=({:.2f},{:.2f}), B=({:.2f},{:.2f}), C=({:.2f},{:.2f})",
-                           b2Distance(P, B), reach_r, P.x, P.y, B.x, B.y, C.x, C.y);
-            global_path_.erase(global_path_.begin() + 1);
-            continue;
-        }
-        break; // next waypoint is OK to keep
+        break; // keep current head until we truly pass B within the corridor
     }
 }

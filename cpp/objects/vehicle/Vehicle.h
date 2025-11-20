@@ -151,7 +151,6 @@ public:
         follow_controller_ = true;
     }
 
-
     /**
      * @brief Set the mode to Rest. The velocity is set to zero immediately, and
      * the steering angle and motor force are also set to zero.
@@ -212,6 +211,9 @@ public:
      * @note if the map ptr of the vehicle is not none, the sensor's map ptr will be set
      * to the same map.
      *
+     * @detail the vehicle drives until the current node index reaches the last node and
+     * the vehicle is close enough to the last waypoint (within stop_distance_). Then it switches to brake mode.
+     *
      * @param s Pointer to the Sensor object to mount.
      * @param side Side of the vehicle where the sensor is mounted (Front/Back/Left/Right).
      * @param offset Lateral (Left/Right) or longitudinal (Front/Back) shift from the center [m].
@@ -255,17 +257,11 @@ public:
                           "for better path following.");
         }
         global_path_ = path;
+        global_head_idx_ = 0;
         if (!global_path_.empty()) {
             mode_ = Mode::Drive; // automatically enter drive mode if a path is provided
         }
     }
-
-    /**
-     * @brief Plan a global path from the vehicle's current position to a target location.
-     * @param x Target x-coordinate in world meters.
-     * @param y Target y-coordinate in world meters.
-     */
-    void goTo(float x, float y);
 
 
 protected:
@@ -283,6 +279,7 @@ private:
         MountSide side;
         float offset;   ///< lateral (Left/Right) or longitudinal (Front/Back) shift [m]
     };
+
     std::vector<std::unique_ptr<Sensor>> sensors_;
     std::array<uint8_t,3> color_bgr_;   ///< BGR
     float motor_force_{0.0f};           ///< N
@@ -299,6 +296,13 @@ private:
     std::vector<b2Vec2> global_path_;       ///< Sequence of waypoints (world coordinates) for global route
     Mode mode_{Mode::Drive};                 ///< Current operational mode
     float brake_force_{-1.0f};             ///< Stored braking force (always negative)
+    float stop_distance_{1.5f};          ///< m, distance away from the last waypoint to consider "arrived"
+    /** Index of the next global waypoint to consume (0-based).
+     *  Invariant: if global_path_.size() >= 2, then 0 <= global_head_idx_ < global_path_.size()-1.
+     *  We always follow segments [global_head_idx_] -> [global_head_idx_+1] and onward.
+     */
+    std::size_t global_head_idx_{0};
+
     /**
      * @brief Push updated poses to mounted sensors as the vehicle moves.
      */
@@ -318,7 +322,7 @@ private:
      *
      * @note this method is used for local, not global path planning.
      */
-    std::expected<std::vector<b2Vec2>, std::string> findBestPath_();
+    std::expected<std::vector<b2Vec2>, std::string> findBestLocalPath_();
 
     /**
      * @brief notifies the box2d world about the current motor force and steering angle
@@ -357,13 +361,10 @@ private:
     /**
      * @brief Picks the local planning segment `[start, end]` along the global path.
      *
-     * @details The code does followins steps:
+     * @details The code does following steps:
      * 1. Walk the global path segments and accumulate distance until the next segment would
      * exceed the horizon distance.
      * 2. Interpolate within that segment to get the end point.
-     *
-     *  @note If two nodes are closer than `min_distance_between_nodes_`, the method will jump
-     *  to the next node to avoid the vehicle driving back to the previous node.
      *
      * @return pair `[start, end]` where `start` is the vehicle's current position,
      * and `end` is a point along the global path.
@@ -383,7 +384,7 @@ private:
      */
     int buildLattice_(const b2Vec2& start,
                         const b2Vec2& end,
-                       std::vector<int>& lastLayer);
+                       std::vector<int>& lastLayer) const;
 
     /**
      * @brief Does collision check to select candidate edges for the motion planner using
@@ -421,18 +422,10 @@ private:
         const std::vector<std::string>& path) const;
 
     /**
-     * @brief Remove waypoints that are already behind the vehicle.
-     * Projects the current pose P onto the *next* path segment [B=global_path_[1], C=global_path_[2]].
-     * If P is ahead of B along B→C (t>0) and either the lateral error is small or P is near B,
-     * drop B. Repeats until the next waypoint is forward-progressing.
-     *
-     * Edge cases:
-     *  - If only [P, B] remain (size==2), drop B when P is within a reach radius.
-     *  - Degenerate segments (|C-B| ≈ 0) are collapsed by dropping B.
-     *
-     * @note if the final waypoint is reached, brake mode is engaged.
+     * @brief Advance global_head_idx_ if B=path[head] is behind us along B→C and
+     * we’re near the corridor.
      */
-    void prunePassedWaypoints_();
+    void advanceGlobalHead_();
 };
 
 #endif // VEHICLE_H
